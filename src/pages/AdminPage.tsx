@@ -29,6 +29,7 @@ import {
   ToggleLeft,
   ToggleRight,
   Trash2,
+  Utensils,
   Users,
   X,
 } from 'lucide-react';
@@ -590,6 +591,27 @@ export function AdminPage() {
         {`
           @media print {
             .no-print { display: none !important; }
+            .print-only { display: block !important; }
+            body { background: #ffffff !important; color: #0f172a !important; }
+            .print-card { break-inside: avoid; page-break-inside: avoid; }
+            .qr-section { min-height: auto; }
+            header, nav, .tabs-nav, .no-print, .metric-card, table { display: none !important; }
+            .print-cards-grid { grid-template-columns: repeat(3, 1fr); gap: 0.75rem; }
+            .print-card {
+              background: #ffffff !important;
+              border: 2px solid #0f172a !important;
+              color: #0f172a !important;
+              box-shadow: none !important;
+              padding: 0.5rem !important;
+              margin: 0 !important;
+            }
+            .print-card * { color: #0f172a !important; border-color: #0f172a !important; }
+            .print-card .text-slate-400, .print-card .text-slate-500, .print-card .text-slate-600 { color: #475569 !important; }
+            .print-card .text-amber-400 { color: #d97706 !important; }
+            .print-card .bg-slate-900, .print-card .bg-slate-950, .print-card .bg-slate-800 { background: #ffffff !important; }
+            .print-card .border-slate-800, .print-card .border-slate-700 { border-color: #0f172a !important; }
+            .print-card .text-slate-100, .print-card .text-slate-200 { color: #0f172a !important; }
+            .print-card .shadow-xl, .print-card .shadow-lg, .print-card .shadow-md { box-shadow: none !important; }
           }
         `}
       </style>
@@ -1050,16 +1072,16 @@ export function AdminPage() {
 
         {/* ===== TABLE & QR GENERATOR ===== */}
         {tab === 'qr' && (
-          <section className="space-y-6">
+          <section className="space-y-6 no-print">
             <div className="flex flex-col sm:flex-row sm:items-center justify-between gap-3">
               <div>
                 <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
                   <QrCode className="w-5 h-5 text-amber-400" />
-                  Table QR links
+                  Table QR Cards
                 </h2>
                 <p className="text-sm text-slate-400">
-                  Table-specific customer menu:{' '}
-                  <code className="text-amber-400">/{slug}/menu?table=N</code>
+                  Printable table cards for Tables 1 to {TABLE_COUNT}. Each card
+                  encodes the customer menu URL for that table.
                 </p>
               </div>
               <div className="flex gap-3">
@@ -1068,27 +1090,25 @@ export function AdminPage() {
                 </span>
                 <button
                   onClick={() => window.print()}
-                  className="no-print flex items-center gap-2 px-4 py-2.5 text-sm font-semibold text-slate-300 bg-slate-800 border border-slate-700 rounded-xl hover:bg-slate-700 transition"
+                  className="flex items-center gap-2 px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl shadow-lg shadow-amber-500/20 transition"
                 >
                   <Printer className="w-4 h-4" />
-                  <span>Printable view</span>
+                  <span>Print All Table Cards</span>
                 </button>
               </div>
             </div>
 
-            <p className="text-xs text-slate-500 max-w-md">
-              No QR-code library is installed, so each card shows the full menu
-              URL. Copy it or download the link file to generate a QR code
-              externally.
-            </p>
-
+            {/* Preview cards (screen view) */}
             <div className="grid grid-cols-2 sm:grid-cols-3 lg:grid-cols-4 gap-4">
               {(() => {
                 const cards: JSX.Element[] = [];
                 for (let n = 1; n <= TABLE_COUNT; n += 1) {
                   const url = `${window.location.origin}/${slug}/menu?table=${n}`;
                   cards.push(
-                    <div key={n} className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col">
+                    <div
+                      key={n}
+                      className="bg-slate-900 border border-slate-800 rounded-2xl p-5 shadow-xl flex flex-col"
+                    >
                       <div className="flex items-center gap-2 mb-3">
                         <QrCode className="w-5 h-5 text-amber-400" />
                         <span className="font-bold text-slate-100">Table {n}</span>
@@ -1125,6 +1145,79 @@ export function AdminPage() {
                 return cards;
               })()}
             </div>
+
+            {/* Printable cards (hidden on screen, shown on print) */}
+            <div className="print-only print-cards-grid">
+              {(() => {
+                const cards: JSX.Element[] = [];
+                for (let n = 1; n <= TABLE_COUNT; n += 1) {
+                  const url = `${window.location.origin}/${slug}/menu?table=${n}`;
+                  const qrUrl = `https://chart.googleapis.com/chart?chs=400x400&cht=qr&chl=${encodeURIComponent(url)}&choe=UTF-8`;
+                  cards.push(
+                    <div
+                      key={n}
+                      className="print-card bg-white border-2 border-slate-900 rounded-xl p-3 flex flex-col items-center min-h-[220px] max-w-xs"
+                    >
+                      {/* Restaurant branding */}
+                      <div className="w-full flex items-center justify-between mb-2">
+                        <div className="flex items-center gap-2">
+                          <div className="p-1 bg-amber-500 rounded">
+                            <Utensils className="w-4 h-4 text-white" />
+                          </div>
+                          <span className="text-sm font-bold text-slate-900 leading-tight">
+                            {tenant?.name}
+                          </span>
+                        </div>
+                        <span className="text-[10px] font-bold text-slate-500 uppercase tracking-wider">
+                          Table {n}
+                        </span>
+                      </div>
+
+                      {/* QR Code */}
+                      <div className="w-32 h-32 mb-2 flex items-center justify-center bg-white border border-slate-200 rounded-lg">
+                        <img
+                          src={qrUrl}
+                          alt={`QR code for Table ${n}`}
+                          className="w-full h-full"
+                          decoding="async"
+                        />
+                      </div>
+
+                      {/* Menu URL */}
+                      <div className="w-full mb-2">
+                        <div className="text-[10px] font-semibold text-slate-500 uppercase mb-1">
+                          Scan to Order
+                        </div>
+                        <div
+                          className="text-[10px] font-mono text-slate-700 break-all text-center bg-slate-50/50 p-1 rounded"
+                          title={url}
+                        >
+                          {url}
+                        </div>
+                      </div>
+
+                      {/* Instructions */}
+                      <div className="w-full text-center">
+                        <div className="text-[9px] font-semibold text-slate-600 uppercase mb-0.5">
+                          How to Order
+                        </div>
+                        <div className="text-[8px] text-slate-600 leading-tight space-y-0.5">
+                          <span>1. Scan QR</span>
+                          <span>2. Browse Menu</span>
+                          <span>3. Order & Pay</span>
+                        </div>
+                      </div>
+                    </div>,
+                  );
+                }
+                return cards;
+              })()}
+            </div>
+
+            <p className="text-xs text-slate-500 max-w-md print-only">
+              Print these cards and place them on each table. Customers scan the
+              QR code to access their table-specific menu and place orders.
+            </p>
           </section>
         )}
 
