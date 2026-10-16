@@ -24,6 +24,25 @@ import {
 } from 'lucide-react';
 
 /* -------------------------------------------------------------------------- */
+/* Loading overlay                                                            */
+/* -------------------------------------------------------------------------- */
+
+function OrderLoadingOverlay({ submitting }: { submitting: boolean }) {
+  if (!submitting) return null;
+  return (
+    <div
+      className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3"
+      role="status"
+      aria-live="polite"
+      aria-label="Placing order"
+    >
+      <Loader2 className="w-8 h-8 animate-spin text-amber-500" aria-hidden="true" />
+      <span className="text-sm font-medium text-slate-200">Placing order…</span>
+    </div>
+  );
+}
+
+/* -------------------------------------------------------------------------- */
 /* Customization types                                                        */
 /* -------------------------------------------------------------------------- */
 
@@ -473,6 +492,9 @@ export function MenuPage() {
 
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased pb-24">
+      {/* Order placement loading overlay */}
+      <OrderLoadingOverlay submitting={submitting} />
+
       {/* Header */}
       <header className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-slate-800 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
         <div className="flex items-center gap-3">
