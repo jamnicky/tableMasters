@@ -1,7 +1,7 @@
 import React, { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
-import { LayoutDashboard, DollarSign, ShoppingBag, Users, AlertCircle, CheckCircle, RefreshCw } from 'lucide-react';
+import { LayoutDashboard, DollarSign, ShoppingBag, Users, RefreshCw } from 'lucide-react';
 
 interface Order {
   id: string;

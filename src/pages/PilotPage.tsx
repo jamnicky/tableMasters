@@ -1,4 +1,4 @@
-import React, { useEffect, useState } from 'react';
+import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
 
@@ -117,7 +117,6 @@ export function PilotPage() {
   const pendingOrders = orders.filter((o) => o.status === 'pending');
   const readyOrders = orders.filter((o) => o.status === 'ready');
   const inPrepOrders = orders.filter((o) => o.status === 'in_preparation');
-  const completedOrders = orders.filter((o) => o.status === 'completed');
 
   return (
     <div className="min-h-screen bg-[#f9f9ff] text-[#111c2d] font-sans pb-24 antialiased selection:bg-[#ffdbce] selection:text-[#370e00]">
