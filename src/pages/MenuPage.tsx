@@ -245,8 +245,7 @@ export function MenuPage() {
   }, [modalSelections, modalCustomizationGroups]);
 
   const currencySymbol = useMemo(() => {
-    // UPI implies INR (₹), otherwise default to USD ($)
-    return tenantSettings?.upi_enabled ? '₹' : '$';
+    return tenantSettings?.currency_symbol ?? '$';
   }, [tenantSettings]);
 
   const displayPrice = (cents: number) => formatPrice(cents, currencySymbol);

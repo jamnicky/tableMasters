@@ -83,6 +83,8 @@ export interface WaiterCall {
 export interface TenantSettings {
   id: string;
   tenant_id: string;
+  currency: string;
+  currency_symbol: string;
   upi_enabled: boolean;
   upi_id: string | null;
   merchant_name: string | null;

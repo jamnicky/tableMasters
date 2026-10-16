@@ -105,6 +105,8 @@ interface MockMenuItem {
 interface MockTenantSettings {
   id: string;
   tenant_id: string;
+  currency: string;
+  currency_symbol: string;
   upi_enabled: boolean;
   upi_id: string | null;
   merchant_name: string | null;
@@ -280,6 +282,8 @@ export async function getTenantSettings(tenantId: string) {
         const defaults: MockTenantSettings = {
           id: 'mock_settings_default',
           tenant_id: tenantId,
+          currency: 'INR',
+          currency_symbol: '₹',
           upi_enabled: false,
           upi_id: null,
           merchant_name: null,
@@ -299,6 +303,8 @@ export async function getTenantSettings(tenantId: string) {
       const defaults: MockTenantSettings = {
         id: 'mock_settings_default',
         tenant_id: tenantId,
+        currency: 'INR',
+        currency_symbol: '₹',
         upi_enabled: false,
         upi_id: null,
         merchant_name: null,
@@ -317,6 +323,8 @@ export async function getTenantSettings(tenantId: string) {
   const defaults: MockTenantSettings = {
     id: 'mock_settings_default',
     tenant_id: tenantId,
+    currency: 'INR',
+    currency_symbol: '₹',
     upi_enabled: false,
     upi_id: null,
     merchant_name: null,
@@ -334,6 +342,8 @@ export async function getTenantSettings(tenantId: string) {
 /** Upsert tenant payment settings. Falls back to mock data / localStorage on any error. */
 export async function upsertTenantSettings(settings: {
   tenant_id: string;
+  currency?: string;
+  currency_symbol?: string;
   upi_enabled?: boolean;
   upi_id?: string | null;
   merchant_name?: string | null;
@@ -346,6 +356,8 @@ export async function upsertTenantSettings(settings: {
   const now = new Date().toISOString();
   const payload = {
     tenant_id: settings.tenant_id,
+    currency: settings.currency ?? 'INR',
+    currency_symbol: settings.currency_symbol ?? '₹',
     upi_enabled: settings.upi_enabled ?? false,
     upi_id: settings.upi_id ?? null,
     merchant_name: settings.merchant_name ?? null,

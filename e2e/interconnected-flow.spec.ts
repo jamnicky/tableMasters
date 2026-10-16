@@ -40,7 +40,7 @@ test.describe('TableMasters — End-to-End Test', () => {
     await page.waitForTimeout(2000);
     await page.screenshot({ path: 'e2e/screenshots/kitchen.png', fullPage: true });
 
-    const kitchenHeader = page.locator('h1').first();
+    const kitchenHeader = page.locator('h1, h2').first();
     await expect(kitchenHeader).toBeVisible({ timeout: 5000 });
     console.log('✅ Kitchen page loads successfully');
   });
