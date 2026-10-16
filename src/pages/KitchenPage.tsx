@@ -5,6 +5,7 @@ import {
   getOrders,
   getMenuItems,
   updateOrderStatus,
+  settlePayment,
   getWaiterCalls,
   resolveWaiterCall,
   subscribeToOrders,
@@ -39,6 +40,11 @@ const BOARD_COLUMNS: Array<{ id: BoardStatus; title: string }> = [
 ];
 
 const BOARD_STATUSES: Order['status'][] = ['pending', 'preparing', 'ready'];
+
+/** Format minor currency units (cents) as a rupee string. */
+function formatPrice(cents: number): string {
+  return (cents / 100).toFixed(2);
+}
 
 /** How long ago an order/call was placed, e.g. "Just now", "5m ago". */
 function getTimeElapsed(createdAt: string): string {
@@ -123,14 +129,21 @@ interface OrderCardProps {
   order: OrderWithItems;
   getItemName: (menuItemId: string) => string;
   onUpdateStatus: (orderId: string, status: Order['status']) => Promise<void>;
+  onSettlePayment: (orderId: string, utrReference: string) => Promise<void>;
   isUpdating: boolean;
+  isSettling: Set<string>;
 }
 
-function OrderCard({ order, getItemName, onUpdateStatus, isUpdating }: OrderCardProps) {
+function OrderCard({ order, getItemName, onUpdateStatus, onSettlePayment, isUpdating, isSettling }: OrderCardProps) {
   const [error, setError] = useState<string | null>(null);
+  const [utrInput, setUtrInput] = useState<string>('');
   const action = statusAction(order.status);
   const timeElapsed = getTimeElapsed(order.created_at);
   const items = order.order_items ?? [];
+  const tipCents = order.tip_amount ?? 0;
+  const paymentMethod = order.payment_method;
+  const paymentStatus = order.payment_status;
+  const showSettle = paymentMethod === 'upi' && paymentStatus === 'pending';
 
   const handleStatusChange = async () => {
     if (!action) return;
@@ -139,6 +152,21 @@ function OrderCard({ order, getItemName, onUpdateStatus, isUpdating }: OrderCard
       await onUpdateStatus(order.id, action.next);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to update order status');
+      setTimeout(() => setError(null), 5000);
+    }
+  };
+
+  const handleSettle = async () => {
+    if (!utrInput.trim()) {
+      setError('Please enter a UTR reference');
+      return;
+    }
+    setError(null);
+    try {
+      await onSettlePayment(order.id, utrInput.trim());
+      setUtrInput('');
+    } catch (err) {
+      setError(err instanceof Error ? err.message : 'Failed to settle payment');
       setTimeout(() => setError(null), 5000);
     }
   };
@@ -169,6 +197,15 @@ function OrderCard({ order, getItemName, onUpdateStatus, isUpdating }: OrderCard
         <span>Placed {timeElapsed}</span>
       </div>
 
+      {/* Order total & tip summary */}
+      <div className="border-t border-slate-800/60 pt-3 mb-3 flex items-center justify-between text-xs">
+        <span className="text-slate-400">Bill ₹{formatPrice(order.total)}</span>
+        {tipCents > 0 && (
+          <span className="text-amber-400 font-bold">+Tip ₹{formatPrice(tipCents)}</span>
+        )}
+        <span className="text-slate-600 font-mono">₹{formatPrice(order.total + tipCents)}</span>
+      </div>
+
       <div className="border-t border-slate-800/60 pt-4 flex-1 divide-y divide-slate-800/40">
         {items.length === 0 ? (
           <p className="text-xs text-slate-500">No items</p>
@@ -195,6 +232,32 @@ function OrderCard({ order, getItemName, onUpdateStatus, isUpdating }: OrderCard
 
       {error && <p className="text-xs text-rose-400 mb-3">{error}</p>}
 
+      {/* Payment settlement section for UPI orders */}
+      {showSettle && (
+        <div className="mt-4 pt-3 border-t border-slate-800">
+          <div className="flex items-center gap-2 text-xs mb-2">
+            <AlertCircle className="w-3.5 h-3.5 text-amber-400 shrink-0" />
+            <span className="text-amber-400 font-semibold">Awaiting UPI payment</span>
+          </div>
+          <div className="space-y-2">
+            <input
+              type="text"
+              value={utrInput}
+              onChange={(e) => setUtrInput(e.target.value)}
+              placeholder="Enter customer UTR reference"
+              className="w-full px-2 py-1.5 rounded bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+            />
+            <button
+              onClick={handleSettle}
+              disabled={isSettling.has(order.id) || !utrInput.trim()}
+              className="w-full py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold rounded transition disabled:opacity-50 disabled:pointer-events-none"
+            >
+              {isSettling.has(order.id) ? 'Verifying…' : 'Verify UTR & Settle'}
+            </button>
+          </div>
+        </div>
+      )}
+
       <button
         onClick={handleStatusChange}
         disabled={isUpdating}
@@ -212,7 +275,9 @@ interface ColumnProps {
   orders: OrderWithItems[];
   getItemName: (menuItemId: string) => string;
   onUpdateStatus: (orderId: string, status: Order['status']) => Promise<void>;
+  onSettlePayment: (orderId: string, utrReference: string) => Promise<void>;
   updatingOrderIds: Set<string>;
+  isSettling: Set<string>;
 }
 
 function Column({
@@ -220,7 +285,9 @@ function Column({
   orders: columnOrders,
   getItemName,
   onUpdateStatus,
+  onSettlePayment,
   updatingOrderIds,
+  isSettling,
 }: ColumnProps) {
   return (
     <div className="bg-slate-900/60 border border-slate-800 rounded-2xl p-4 flex flex-col h-full min-h-[52vh]">
@@ -242,7 +309,9 @@ function Column({
               order={order}
               getItemName={getItemName}
               onUpdateStatus={onUpdateStatus}
+              onSettlePayment={onSettlePayment}
               isUpdating={updatingOrderIds.has(order.id)}
+              isSettling={isSettling}
             />
           ))
         )}
@@ -319,6 +388,7 @@ export function KitchenPage() {
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
   const [updatingOrderIds, setUpdatingOrderIds] = useState<Set<string>>(new Set());
+  const [isSettling, setIsSettling] = useState<Set<string>>(new Set());
   const [resolvingCallIds, setResolvingCallIds] = useState<Set<string>>(new Set());
   const [acknowledgedCallIds, setAcknowledgedCallIds] = useState<Set<string>>(new Set());
   const [showOrderAlert, setShowOrderAlert] = useState(false);
@@ -436,16 +506,18 @@ export function KitchenPage() {
 
       const nextOrders = (ordersData ?? []) as unknown as OrderWithItems[];
       setOrders(nextOrders);
-      setWaiterCalls((callsData ?? []).filter((c) => c.status === 'pending'));
+      setWaiterCalls(
+        (callsData ?? []).filter((c: { status: string }) => c.status === 'pending'),
+      );
 
       if (menuData) {
         const map = new Map<string, MenuItem>();
-        menuData.forEach((item) => map.set(item.id, item));
+        menuData.forEach((item: any) => map.set(item.id, item as MenuItem));
         setMenuById(map);
       }
 
       prevPendingOrderIds.current = nextOrders.filter((o) => o.status === 'pending').map((o) => o.id);
-      prevWaiterCallIds.current = (callsData ?? []).map((c) => c.id);
+      prevWaiterCallIds.current = (callsData ?? []).map((c: { id: string }) => c.id);
       ordersInitialized.current = true;
       waiterCallsInitialized.current = true;
     } catch (err) {
@@ -515,7 +587,7 @@ export function KitchenPage() {
       setError(String(error));
       return;
     }
-    setWaiterCalls((data ?? []).filter((c) => c.status === 'pending'));
+    setWaiterCalls((data ?? []).filter((c: { status: string }) => c.status === 'pending'));
   }, [tenant?.id]);
 
   const handleUpdateOrderStatus = useCallback(async (orderId: string, status: Order['status']) => {
@@ -524,6 +596,19 @@ export function KitchenPage() {
       await updateOrderStatus(orderId, status);
     } finally {
       setUpdatingOrderIds((prev) => {
+        const next = new Set(prev);
+        next.delete(orderId);
+        return next;
+      });
+    }
+  }, []);
+
+  const handleSettlePayment = useCallback(async (orderId: string, utrReference: string) => {
+    setIsSettling((prev) => new Set(prev).add(orderId));
+    try {
+      await settlePayment(orderId, utrReference);
+    } finally {
+      setIsSettling((prev) => {
         const next = new Set(prev);
         next.delete(orderId);
         return next;
@@ -657,7 +742,9 @@ export function KitchenPage() {
                   orders={columnOrders}
                   getItemName={getItemName}
                   onUpdateStatus={handleUpdateOrderStatus}
+                  onSettlePayment={handleSettlePayment}
                   updatingOrderIds={updatingOrderIds}
+                  isSettling={isSettling}
                 />
               );
             })}

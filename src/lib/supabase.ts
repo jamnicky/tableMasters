@@ -24,6 +24,15 @@ export { supabase };
 export type { Database };
 export { hasSupabaseConfig };
 
+/**
+ * postgrest-js infers `insert`/`update`/`upsert` payloads as `never` on this
+ * builder shape. We cast through `any` at the table boundary while keeping
+ * every payload fully typed via the TypeScript interfaces below.
+ */
+function db() {
+  return supabase as any;
+}
+
 // ---------------------------------------------------------------------------
 // In-memory mock store (used when Supabase is not configured)
 // ---------------------------------------------------------------------------
@@ -43,6 +52,10 @@ interface MockOrder {
   table_number: string | number;
   status: Order['status'];
   total: number;
+  tip_amount: number;
+  payment_method: 'upi' | 'cash' | 'gateway' | null;
+  payment_status: 'pending' | 'paid' | 'failed' | 'refunded';
+  utr_reference: string | null;
   customer_name: string | null;
   order_type: string;
   created_at: string;
@@ -71,6 +84,21 @@ interface MockMenuItem {
   is_available: boolean;
   image_url: string | null;
   customization_options: string | null;
+  created_at: string;
+  updated_at: string;
+}
+
+interface MockTenantSettings {
+  id: string;
+  tenant_id: string;
+  upi_enabled: boolean;
+  upi_id: string | null;
+  merchant_name: string | null;
+  upi_qr_image_url: string | null;
+  upi_instruction_notes: string | null;
+  gateway_enabled: boolean;
+  gateway_provider: 'razorpay' | 'stripe' | null;
+  cash_enabled: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -162,6 +190,7 @@ const MOCK_MENU_ITEMS: MockMenuItem[] = [
 
 let MOCK_ORDERS: MockOrder[] = [];
 let MOCK_WAITER_CALLS: MockWaiterCall[] = [];
+let MOCK_TENANT_SETTINGS: MockTenantSettings[] = [];
 
 function mockId() {
   return 'mock_' + Math.random().toString(36).slice(2, 11);
@@ -174,7 +203,7 @@ function mockId() {
 /** Resolve a tenant by its URL slug. Falls back to mock data. */
 export async function getTenantBySlug(slug: string) {
   if (supabase) {
-    const { data, error } = await supabase
+    const { data, error } = await (db() as any)
       .from('tenants')
       .select('*')
       .eq('slug', slug)
@@ -189,7 +218,10 @@ export async function getTenantBySlug(slug: string) {
 /** Fetch menu items for a tenant. Falls back to mock data. */
 export async function getMenuItems(tenantId: string, availableOnly = true) {
   if (supabase) {
-    let query = supabase.from('menu_items').select('*').eq('tenant_id', tenantId);
+    let query = (db() as any)
+      .from('menu_items')
+      .select('*')
+      .eq('tenant_id', tenantId);
     if (availableOnly) query = query.eq('is_available', true);
     const { data, error } = await query.order('category', { ascending: true });
     if (error) throw error;
@@ -201,11 +233,102 @@ export async function getMenuItems(tenantId: string, availableOnly = true) {
   return { data: items, error: null };
 }
 
+/** Fetch tenant payment settings. Falls back to mock defaults. */
+export async function getTenantSettings(tenantId: string) {
+  if (supabase) {
+    const { data, error } = await (db() as any)
+      .from('tenant_settings')
+      .select('*')
+      .eq('tenant_id', tenantId)
+      .maybeSingle();
+    if (error) throw error;
+    return { data, error: null };
+  }
+
+  const settings = MOCK_TENANT_SETTINGS.find((s) => s.tenant_id === tenantId) ?? null;
+  const defaults: MockTenantSettings = {
+    id: 'mock_settings_default',
+    tenant_id: tenantId,
+    upi_enabled: false,
+    upi_id: null,
+    merchant_name: null,
+    upi_qr_image_url: null,
+    upi_instruction_notes: null,
+    gateway_enabled: false,
+    gateway_provider: null,
+    cash_enabled: true,
+    created_at: new Date().toISOString(),
+    updated_at: new Date().toISOString(),
+  };
+  return { data: settings ?? defaults, error: null };
+}
+
+/** Upsert tenant payment settings. Falls back to mock data. */
+export async function upsertTenantSettings(settings: {
+  tenant_id: string;
+  upi_enabled?: boolean;
+  upi_id?: string | null;
+  merchant_name?: string | null;
+  upi_qr_image_url?: string | null;
+  upi_instruction_notes?: string | null;
+  gateway_enabled?: boolean;
+  gateway_provider?: 'razorpay' | 'stripe' | null;
+  cash_enabled?: boolean;
+}) {
+  if (supabase) {
+    const { data, error } = await (db() as any)
+      .from('tenant_settings')
+      .upsert({
+        tenant_id: settings.tenant_id,
+        upi_enabled: settings.upi_enabled ?? false,
+        upi_id: settings.upi_id ?? null,
+        merchant_name: settings.merchant_name ?? null,
+        upi_qr_image_url: settings.upi_qr_image_url ?? null,
+        upi_instruction_notes: settings.upi_instruction_notes ?? null,
+        gateway_enabled: settings.gateway_enabled ?? false,
+        gateway_provider: settings.gateway_provider ?? null,
+        cash_enabled: settings.cash_enabled ?? true,
+        updated_at: new Date().toISOString(),
+      })
+      .select()
+      .single();
+    if (error) throw error;
+    return { data, error: null };
+  }
+
+  const idx = MOCK_TENANT_SETTINGS.findIndex((s) => s.tenant_id === settings.tenant_id);
+  const now = new Date().toISOString();
+  const merged: MockTenantSettings = {
+    id: idx === -1 ? mockId() : MOCK_TENANT_SETTINGS[idx].id,
+    tenant_id: settings.tenant_id,
+    upi_enabled: settings.upi_enabled ?? false,
+    upi_id: settings.upi_id ?? null,
+    merchant_name: settings.merchant_name ?? null,
+    upi_qr_image_url: settings.upi_qr_image_url ?? null,
+    upi_instruction_notes: settings.upi_instruction_notes ?? null,
+    gateway_enabled: settings.gateway_enabled ?? false,
+    gateway_provider: settings.gateway_provider ?? null,
+    cash_enabled: settings.cash_enabled ?? true,
+    created_at: idx === -1 ? now : MOCK_TENANT_SETTINGS[idx].created_at,
+    updated_at: now,
+  };
+  if (idx === -1) {
+    MOCK_TENANT_SETTINGS.push(merged);
+  } else {
+    MOCK_TENANT_SETTINGS[idx] = merged;
+  }
+  return { data: merged, error: null };
+}
+
 /** Create an order with line items. Falls back to mock data. */
 export async function createOrder(orderData: {
   tenant_id: string;
   table_number: string | number;
   total: number;
+  tip_amount?: number;
+  payment_method?: 'upi' | 'cash' | 'gateway' | null;
+  payment_status?: 'pending' | 'paid' | 'failed' | 'refunded';
+  utr_reference?: string | null;
   customer_name?: string | null;
   order_type?: string;
   items: Array<{
@@ -217,13 +340,17 @@ export async function createOrder(orderData: {
   }>;
 }) {
   if (supabase) {
-    const { data: order, error: orderErr } = await supabase
+    const { data: order, error: orderErr } = await (db() as any)
       .from('orders')
       .insert({
         tenant_id: orderData.tenant_id,
         table_number: orderData.table_number,
         status: 'pending',
         total: orderData.total,
+        tip_amount: orderData.tip_amount ?? 0,
+        payment_method: orderData.payment_method ?? null,
+        payment_status: orderData.payment_status ?? 'pending',
+        utr_reference: orderData.utr_reference ?? null,
         customer_name: orderData.customer_name ?? null,
         order_type: orderData.order_type ?? 'dine-in',
       })
@@ -240,7 +367,9 @@ export async function createOrder(orderData: {
       customizations: item.customizations ?? null,
     }));
 
-    const { error: itemsErr } = await supabase.from('order_items').insert(orderItems);
+    const { error: itemsErr } = await (db() as any)
+      .from('order_items')
+      .insert(orderItems);
     if (itemsErr) throw itemsErr;
 
     return { data: order, error: null };
@@ -252,6 +381,10 @@ export async function createOrder(orderData: {
     table_number: orderData.table_number,
     status: 'pending',
     total: orderData.total,
+    tip_amount: orderData.tip_amount ?? 0,
+    payment_method: orderData.payment_method ?? null,
+    payment_status: orderData.payment_status ?? 'pending',
+    utr_reference: orderData.utr_reference ?? null,
     customer_name: orderData.customer_name ?? null,
     order_type: orderData.order_type ?? 'dine-in',
     created_at: new Date().toISOString(),
@@ -275,7 +408,7 @@ export async function getOrders(
   statuses?: Order['status'][],
 ) {
   if (supabase) {
-    let query = supabase
+    let query = (db() as any)
       .from('orders')
       .select(`
         *,
@@ -306,7 +439,7 @@ export async function updateOrderStatus(
   status: Order['status'],
 ) {
   if (supabase) {
-    const { data, error } = await supabase
+    const { data, error } = await (db() as any)
       .from('orders')
       .update({ status, updated_at: new Date().toISOString() })
       .eq('id', orderId)
@@ -324,6 +457,39 @@ export async function updateOrderStatus(
   return { data: MOCK_ORDERS[idx], error: null };
 }
 
+/** Settle a payment: mark order as paid and record UTR reference. Falls back to mock data. */
+export async function settlePayment(
+  orderId: string,
+  utrReference: string | null,
+) {
+  if (supabase) {
+    const { data, error } = await (db() as any)
+      .from('orders')
+      .update({
+        payment_status: 'paid',
+        utr_reference: utrReference,
+        updated_at: new Date().toISOString(),
+      })
+      .eq('id', orderId)
+      .select()
+      .single();
+    if (error) throw error;
+    return { data, error: null };
+  }
+
+  const idx = MOCK_ORDERS.findIndex((o) => o.id === orderId);
+  if (idx === -1) {
+    return { data: null, error: new Error('Order not found') };
+  }
+  MOCK_ORDERS[idx] = {
+    ...MOCK_ORDERS[idx],
+    payment_status: 'paid',
+    utr_reference: utrReference,
+    updated_at: new Date().toISOString(),
+  };
+  return { data: MOCK_ORDERS[idx], error: null };
+}
+
 /** Create a waiter call alert. Falls back to mock data. */
 export async function createWaiterCall(data: {
   tenant_id: string;
@@ -332,7 +498,7 @@ export async function createWaiterCall(data: {
   message?: string | null;
 }) {
   if (supabase) {
-    const { data: call, error } = await supabase
+    const { data: call, error } = await (db() as any)
       .from('waiter_calls')
       .insert({
         tenant_id: data.tenant_id,
@@ -364,7 +530,7 @@ export async function createWaiterCall(data: {
 /** Fetch waiter calls for a tenant. Falls back to mock data. */
 export async function getWaiterCalls(tenantId: string) {
   if (supabase) {
-    const { data, error } = await supabase
+    const { data, error } = await (db() as any)
       .from('waiter_calls')
       .select('*')
       .eq('tenant_id', tenantId)
@@ -380,7 +546,7 @@ export async function getWaiterCalls(tenantId: string) {
 /** Resolve a waiter call. Falls back to mock data. */
 export async function resolveWaiterCall(callId: string) {
   if (supabase) {
-    const { data, error } = await supabase
+    const { data, error } = await (db() as any)
       .from('waiter_calls')
       .update({ status: 'resolved', updated_at: new Date().toISOString() })
       .eq('id', callId)

@@ -4,15 +4,19 @@ import {
   createOrder,
   createWaiterCall,
   getMenuItems,
+  getOrders,
   getTenantBySlug,
+  getTenantSettings,
   hasSupabaseConfig,
+  settlePayment,
 } from '@/lib/supabase';
-import type { MenuItem, Tenant } from '@/types/database';
+import type { MenuItem, Tenant, TenantSettings } from '@/types/database';
 import {
   AlertCircle,
   Bell,
   ChevronRight,
   CircleCheck,
+  Copy,
   Loader2,
   Minus,
   Plus,
@@ -22,25 +26,6 @@ import {
   Utensils,
   X,
 } from 'lucide-react';
-
-/* -------------------------------------------------------------------------- */
-/* Loading overlay                                                            */
-/* -------------------------------------------------------------------------- */
-
-function OrderLoadingOverlay({ submitting }: { submitting: boolean }) {
-  if (!submitting) return null;
-  return (
-    <div
-      className="fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3"
-      role="status"
-      aria-live="polite"
-      aria-label="Placing order"
-    >
-      <Loader2 className="w-8 h-8 animate-spin text-amber-500" aria-hidden="true" />
-      <span className="text-sm font-medium text-slate-200">Placing order…</span>
-    </div>
-  );
-}
 
 /* -------------------------------------------------------------------------- */
 /* Customization types                                                        */
@@ -168,6 +153,7 @@ export function MenuPage() {
 
   /* Data state */
   const [tenant, setTenant] = useState<Tenant | null>(null);
+  const [tenantSettings, setTenantSettings] = useState<TenantSettings | null>(null);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [categories, setCategories] = useState<string[]>(['All']);
   const [selectedCategory, setSelectedCategory] = useState<string>('All');
@@ -189,6 +175,17 @@ export function MenuPage() {
   const [modalSelections, setModalSelections] = useState<Record<string, string[]>>({});
   const [modalNotes, setModalNotes] = useState('');
 
+  /* Tip state */
+  const [tipPercent, setTipPercent] = useState<number | null>(null); // null = not set
+  const [customTipAmount, setCustomTipAmount] = useState<string>('');
+
+  /* Payment method state */
+  const [paymentMethod, setPaymentMethod] = useState<'upi' | 'cash' | 'gateway' | null>(null);
+  const [utrReference, setUtrReference] = useState<string>('');
+
+  /* Digital bill modal state */
+  const [isBillOpen, setIsBillOpen] = useState(false);
+
   /* Submission / feedback state */
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
@@ -207,8 +204,25 @@ export function MenuPage() {
     });
   }, [menuItems, selectedCategory, searchQuery]);
 
-  const cartTotal = useMemo(() => cart.reduce((sum, line) => sum + line.price * line.quantity, 0), [cart]);
+  const cartSubtotal = useMemo(
+    () => cart.reduce((sum, line) => sum + line.price * line.quantity, 0),
+    [cart],
+  );
   const itemCount = useMemo(() => cart.reduce((sum, line) => sum + line.quantity, 0), [cart]);
+
+  const tipAmountCents = useMemo(() => {
+    if (tipPercent === null) return 0;
+    if (customTipAmount) {
+      const customCents = Math.round(Number(customTipAmount) * 100);
+      return Number.isNaN(customCents) || customCents < 0 ? 0 : customCents;
+    }
+    return Math.round((cartSubtotal * tipPercent) / 100);
+  }, [cartSubtotal, tipPercent, customTipAmount]);
+
+  const grandTotalCents = useMemo(() => cartSubtotal + tipAmountCents, [
+    cartSubtotal,
+    tipAmountCents,
+  ]);
 
   const modalCustomizationGroups = useMemo(
     () => parseCustomizationOptions(modalItem?.customization_options ?? null),
@@ -227,6 +241,19 @@ export function MenuPage() {
     return sum;
   }, [modalSelections, modalCustomizationGroups]);
 
+  const upiPaymentUrl = useMemo(() => {
+    if (!tenantSettings?.upi_id || !tenantSettings.merchant_name) return null;
+    const amountRupees = (grandTotalCents / 100).toFixed(2);
+    const params = new URLSearchParams({
+      pa: tenantSettings.upi_id,
+      pn: tenantSettings.merchant_name,
+      am: amountRupees,
+      cu: 'INR',
+      tn: `Table ${tableNumber} Order`,
+    });
+    return `upi://pay?${params.toString()}`;
+  }, [tenantSettings, grandTotalCents, tableNumber]);
+
   /* Data loading */
   const loadMenu = useCallback(async () => {
     setLoading(true);
@@ -242,12 +269,18 @@ export function MenuPage() {
       }
       setTenant(tenantData);
 
+      const { data: settings, error: settingsErr } = await getTenantSettings(tenantData.id);
+      if (settingsErr) throw settingsErr;
+      setTenantSettings(settings ?? null);
+
       const { data: items, error: itemsErr } = await getMenuItems(tenantData.id, true);
       if (itemsErr) throw itemsErr;
       setMenuItems(items ?? []);
 
-      const uniqueCats = Array.from(new Set((items ?? []).map((item) => item.category)));
-      setCategories(['All', ...uniqueCats]);
+      const uniqueCats = Array.from(
+        new Set((items ?? []).map((item: { category: string }) => item.category)),
+      );
+      setCategories(['All', ...(uniqueCats as string[])]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load menu');
     } finally {
@@ -409,6 +442,23 @@ export function MenuPage() {
     setCart((prev) => prev.filter((line) => line.id !== lineId));
   }, []);
 
+  /* Tip selection */
+  const selectTip = useCallback((percent: number | null) => {
+    setTipPercent(percent);
+    if (percent === null) setCustomTipAmount('');
+  }, []);
+
+  const setCustomTip = useCallback((e: React.ChangeEvent<HTMLInputElement>) => {
+    setTipPercent(null); // custom amount overrides percentage
+    setCustomTipAmount(e.target.value);
+  }, []);
+
+  const tipChipLabel = (p: number) => (p === 0 ? 'No Tip' : `${p}%`);
+  const isTipSelected = (p: number) => {
+    if (tipPercent === null) return false;
+    return tipPercent === p;
+  };
+
   /* Waiter call */
   const handleCallWaiter = useCallback(async () => {
     if (!tenant) return;
@@ -432,6 +482,19 @@ export function MenuPage() {
   /* Order submission */
   const handlePlaceOrder = useCallback(async () => {
     if (!tenant || cart.length === 0) return;
+    if (!paymentMethod) {
+      showToast('Please select a payment method', 'error');
+      return;
+    }
+    if (paymentMethod === 'upi' && !tenantSettings?.upi_id) {
+      showToast('UPI payments are not configured for this restaurant', 'error');
+      return;
+    }
+    if (paymentMethod === 'upi' && !utrReference.trim()) {
+      showToast('Please enter your UTR transaction reference', 'error');
+      return;
+    }
+
     setSubmitting(true);
     try {
       const orderItems = cart.map((line) => ({
@@ -445,21 +508,90 @@ export function MenuPage() {
       const { error: orderErr } = await createOrder({
         tenant_id: tenant.id,
         table_number: tableNumber,
-        total: cartTotal,
+        total: grandTotalCents,
+        tip_amount: tipAmountCents,
+        payment_method: paymentMethod,
+        payment_status: paymentMethod === 'upi' ? 'pending' : 'paid',
+        utr_reference: paymentMethod === 'upi' ? utrReference.trim() || null : null,
         items: orderItems,
       });
       if (orderErr) throw orderErr;
 
       setCart([]);
       setIsCartOpen(false);
-      showToast('Order placed successfully! Status: pending', 'success');
+      setIsBillOpen(false);
+      setPaymentMethod(null);
+      setUtrReference('');
+      setTipPercent(null);
+      setCustomTipAmount('');
+      showToast(
+        paymentMethod === 'upi'
+          ? 'Order placed! Awaiting UPI payment verification.'
+          : 'Order placed successfully!',
+        'success',
+      );
     } catch (err) {
       showToast('Failed to place order. Please try again.', 'error');
       console.error(err);
     } finally {
       setSubmitting(false);
     }
-  }, [tenant, cart, cartTotal, tableNumber, showToast]);
+  }, [
+    tenant,
+    tenantSettings,
+    cart,
+    cartSubtotal,
+    tipAmountCents,
+    grandTotalCents,
+    tableNumber,
+    paymentMethod,
+    utrReference,
+    showToast,
+  ]);
+
+  const handleVerifyUpiPayment = useCallback(async () => {
+    if (!utrReference.trim()) {
+      showToast('Please enter a UTR reference', 'error');
+      return;
+    }
+    setSubmitting(true);
+    try {
+      // In a real flow, this would verify with the payment gateway.
+      // Here we mark the most recent pending order for this tenant/table as paid.
+      const { data: orders, error: ordersErr } = await getOrders(tenant!.id, ['pending']);
+      if (ordersErr) throw ordersErr;
+      const recentOrder = orders?.[orders.length - 1];
+      if (!recentOrder) {
+        showToast('No pending order found to verify', 'error');
+        return;
+      }
+      const { error: settleErr } = await settlePayment(recentOrder.id, utrReference.trim());
+      if (settleErr) throw settleErr;
+
+      setIsBillOpen(false);
+      setUtrReference('');
+      setSubmitting(false);
+      showToast('UPI payment verified and order marked as paid', 'success');
+    } catch (err) {
+      showToast('Payment verification failed. Please try again.', 'error');
+      console.error(err);
+    } finally {
+      setSubmitting(false);
+    }
+  }, [tenant, utrReference, getOrders, settlePayment, showToast]);
+
+  /* Open digital bill (tip + payment) */
+  const openBill = useCallback(() => {
+    setIsBillOpen(true);
+  }, []);
+
+  const closeBill = useCallback(() => {
+    setIsBillOpen(false);
+    setPaymentMethod(null);
+    setUtrReference('');
+    setTipPercent(null);
+    setCustomTipAmount('');
+  }, []);
 
   /* Empty / error states */
   if (loading) {
@@ -493,7 +625,17 @@ export function MenuPage() {
   return (
     <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased pb-24">
       {/* Order placement loading overlay */}
-      <OrderLoadingOverlay submitting={submitting} />
+      <div
+        className={`fixed inset-0 z-[100] bg-slate-950/80 backdrop-blur-sm flex flex-col items-center justify-center gap-3 ${
+          submitting ? '' : 'hidden'
+        }`}
+        role="status"
+        aria-live="polite"
+        aria-label="Placing order"
+      >
+        <Loader2 className="w-8 h-8 animate-spin text-amber-500" aria-hidden="true" />
+        <span className="text-sm font-medium text-slate-200">Placing order…</span>
+      </div>
 
       {/* Header */}
       <header className="sticky top-0 z-40 bg-slate-950/90 backdrop-blur-md border-b border-slate-800 px-4 py-3 flex flex-wrap items-center justify-between gap-3">
@@ -892,17 +1034,188 @@ export function MenuPage() {
 
           {cart.length > 0 && (
             <div className="p-4 pt-2 border-t border-slate-800 mt-auto">
-              <div className="flex justify-between items-center mb-4 text-slate-300">
-                <span className="font-semibold text-sm">Grand Total</span>
-                <span className="text-xl font-bold text-amber-400">${formatPrice(cartTotal)}</span>
+              <div className="space-y-3 mb-4">
+                <div className="flex justify-between items-center text-slate-300">
+                  <span className="text-sm font-medium">Subtotal</span>
+                  <span className="text-sm font-bold text-slate-100">${formatPrice(cartSubtotal)}</span>
+                </div>
+                <div className="flex justify-between items-center text-slate-300">
+                  <span className="text-sm font-medium">Tip</span>
+                  <span className="text-sm font-bold text-amber-400">${formatPrice(tipAmountCents)}</span>
+                </div>
+                <div className="flex justify-between items-center text-slate-100 border-t pt-2">
+                  <span className="text-sm font-bold">Grand Total</span>
+                  <span className="text-sm font-black text-amber-400">${formatPrice(grandTotalCents)}</span>
+                </div>
               </div>
-              <button
-                onClick={handlePlaceOrder}
-                disabled={submitting}
-                className="w-full py-3.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl transition shadow-lg shadow-amber-500/20 disabled:opacity-60 disabled:cursor-not-allowed focus:outline-none focus:ring-2 focus:ring-amber-400"
-              >
-                {submitting ? 'Sending Order…' : 'Place Order Now'}
-              </button>
+
+              {/* Tipping step */}
+              <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-3 mb-4">
+                <h4 className="text-xs font-bold text-slate-400 uppercase mb-2">Tip for Serving Pilot</h4>
+                <div className="flex gap-2">
+                  {[0, 5, 10, 15].map((p) => (
+                    <button
+                      key={p}
+                      onClick={() => selectTip(p)}
+                      className={`flex-1 px-2 py-2 rounded border text-xs font-medium transition ${
+                        isTipSelected(p)
+                          ? 'bg-amber-500 border-amber-500 text-slate-950'
+                          : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-slate-600'
+                      }`}
+                    >
+                      {tipChipLabel(p)}
+                    </button>
+                  ))}
+                  <button
+                    onClick={() => selectTip(null)}
+                    className={`flex-1 px-2 py-2 rounded border text-xs font-medium transition ${
+                      tipPercent === null && !customTipAmount ? 'bg-amber-500 border-amber-500 text-slate-950' : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-slate-600'
+                    }`}
+                  >
+                    Custom
+                  </button>
+                </div>
+                {tipPercent === null && (
+                  <div className="mt-2">
+                    <input
+                      type="text"
+                      placeholder="₹ amount"
+                      value={customTipAmount}
+                      onChange={setCustomTip}
+                      className="w-full px-2 py-1 rounded bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+                    />
+                  </div>
+                )}
+              </div>
+
+              {/* Payment method selection */}
+              <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-3 mb-4">
+                <h4 className="text-xs font-bold text-slate-400 uppercase mb-2">Payment Method</h4>
+                <div className="space-y-2">
+                  {(tenantSettings?.cash_enabled ?? true) && (
+                    <button
+                      onClick={() => setPaymentMethod('cash')}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded border text-left transition ${
+                        paymentMethod === 'cash'
+                          ? 'bg-amber-500/20 border-amber-500 text-amber-300'
+                          : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-slate-600'
+                      }`}
+                    >
+                      <span className="w-5 h-5 rounded flex items-center justify-center ${
+                        paymentMethod === 'cash' ? 'bg-amber-500 text-slate-950' : 'bg-transparent border border-slate-600'
+                      }">
+                        {paymentMethod === 'cash' ? '✓' : '○'}
+                      </span>
+                      <span className="text-sm font-medium">Cash / Pay at Counter</span>
+                    </button>
+                  )}
+                  {(tenantSettings?.upi_enabled ?? false) && (
+                    <button
+                      onClick={() => setPaymentMethod('upi')}
+                      className={`w-full flex items-center gap-3 px-3 py-2.5 rounded border text-left transition ${
+                        paymentMethod === 'upi'
+                          ? 'bg-amber-500/20 border-amber-500 text-amber-300'
+                          : 'bg-slate-900 border-slate-700 text-slate-300 hover:border-slate-600'
+                      }`}
+                    >
+                      <span className="w-5 h-5 rounded flex items-center justify-center ${
+                        paymentMethod === 'upi' ? 'bg-amber-500 text-slate-950' : 'bg-transparent border border-slate-600'
+                      }">
+                        {paymentMethod === 'upi' ? '✓' : '○'}
+                      </span>
+                      <span className="text-sm font-medium">UPI Direct</span>
+                    </button>
+                  )}
+                  {(tenantSettings?.gateway_enabled ?? false) && (
+                    <button
+                      onClick={() => setPaymentMethod('gateway')}
+                      className="w-full flex items-center gap-3 px-3 py-2.5 rounded border text-left text-slate-500 bg-slate-900 border-slate-700 transition"
+                    >
+                      <span className="w-5 h-5 rounded flex items-center justify-center text-slate-600">○</span>
+                      <span className="text-sm font-medium text-slate-400">Pay Online (Razorpay / Stripe)</span>
+                      <span className="ml-auto text-[10px] text-slate-500">Coming soon</span>
+                    </button>
+                  )}
+                </div>
+              </div>
+
+              {/* UPI payment details */}
+              {paymentMethod === 'upi' && tenantSettings && (
+                <div className="bg-amber-900/20 border border-amber-500/30 rounded-xl p-3 mb-4">
+                  <h4 className="text-xs font-bold text-amber-400 uppercase mb-2">Pay with UPI</h4>
+                  <div className="flex flex-col gap-2">
+                    {tenantSettings.upi_qr_image_url && (
+                      <div className="flex justify-center">
+                        <img
+                          src={tenantSettings.upi_qr_image_url}
+                          alt="UPI QR Code"
+                          className="w-24 h-24 rounded-lg bg-slate-900"
+                        />
+                      </div>
+                    )}
+                    <div className="flex items-center justify-between bg-slate-900 border border-slate-700 rounded-lg p-2">
+                      <div className="flex items-center gap-2">
+                        <span className="text-xs text-slate-400">UPI ID</span>
+                        <span className="text-sm font-mono text-amber-400">{tenantSettings.upi_id}</span>
+                      </div>
+                      <button
+                        onClick={() => {
+                          navigator.clipboard.writeText(tenantSettings.upi_id!);
+                          showToast('UPI ID copied', 'success', 2000);
+                        }}
+                        className="text-xs text-amber-400 hover:text-amber-300"
+                      >
+                        <Copy className="w-3 h-3" /> Copy
+                      </button>
+                    </div>
+                    {upiPaymentUrl && (
+                      <a
+                        href={upiPaymentUrl}
+                        className="w-full py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold rounded-lg text-center transition"
+                      >
+                        Open in UPI App
+                      </a>
+                    )}
+                    <div>
+                      <label className="block text-xs text-slate-400 mb-1">UTR Reference</label>
+                      <input
+                        type="text"
+                        value={utrReference}
+                        onChange={(e) => setUtrReference(e.target.value)}
+                        placeholder="Enter UTR transaction ID"
+                        className="w-full px-2 py-1.5 rounded bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
+                      />
+                      {tenantSettings.upi_instruction_notes && (
+                        <p className="text-[10px] text-slate-500 mt-1">{tenantSettings.upi_instruction_notes}</p>
+                      )}
+                    </div>
+                  </div>
+                </div>
+              )}
+              {paymentMethod === 'upi' && !tenantSettings?.upi_id && (
+                <div className="text-xs text-rose-400 bg-rose-900/20 border border-rose-500/30 rounded-lg p-2 mb-4">
+                  UPI payments are not configured for this restaurant.
+                </div>
+              )}
+
+              {/* Grand total + action */}
+              <div className="border-t pt-3">
+                <div className="flex justify-between items-center mb-3 text-slate-100">
+                  <span className="text-sm font-bold">Amount to Pay</span>
+                  <span className="text-lg font-black text-amber-400">${formatPrice(grandTotalCents)}</span>
+                </div>
+                <button
+                  onClick={openBill}
+                  disabled={submitting || grandTotalCents === 0 || !paymentMethod}
+                  className={`w-full py-3 rounded-xl font-bold transition shadow-lg disabled:opacity-60 disabled:cursor-not-allowed ${
+                    paymentMethod && grandTotalCents > 0
+                      ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 shadow-amber-500/20'
+                      : 'bg-slate-800 border border-slate-700 text-slate-500'
+                  }`}
+                >
+                  {submitting ? 'Sending Order…' : `Pay ₹${formatPrice(grandTotalCents)}`}
+                </button>
+              </div>
             </div>
           )}
         </div>
@@ -910,6 +1223,89 @@ export function MenuPage() {
           <div className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" onClick={() => setIsCartOpen(false)} aria-hidden="true" />
         )}
       </div>
+
+      {/* Digital Bill / Tip modal */}
+      {isBillOpen && (
+        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
+          <div
+            className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl w-full max-w-lg max-h-[90vh] overflow-y-auto flex flex-col"
+          >
+            <div className="p-6 border-b border-slate-800 flex justify-between items-center">
+              <h2 className="text-lg font-bold text-slate-100">Digital Bill</h2>
+              <button onClick={closeBill} className="p-2 text-slate-400 hover:text-slate-100 rounded-lg hover:bg-slate-800">
+                <X className="w-6 h-6" aria-hidden="true" />
+              </button>
+            </div>
+
+            <div className="p-6">
+              <div className="space-y-4">
+                <div className="flex justify-between items-center border-b pb-2">
+                  <span className="text-slate-400 text-sm">Subtotal</span>
+                  <span className="text-slate-200 font-mono">${formatPrice(cartSubtotal)}</span>
+                </div>
+                <div className="flex justify-between items-center border-b pb-2">
+                  <span className="text-slate-400 text-sm">Tip for Serving Pilot</span>
+                  <span className="text-amber-400 font-mono">+${formatPrice(tipAmountCents)}</span>
+                </div>
+                <div className="flex justify-between items-center pt-2">
+                  <span className="text-slate-100 font-bold">Total</span>
+                  <span className="text-amber-400 font-bold font-mono">${formatPrice(grandTotalCents)}</span>
+                </div>
+              </div>
+
+              <div className="mt-6 p-4 bg-slate-800/50 border border-slate-700 rounded-xl">
+                <h4 className="text-xs font-bold text-slate-400 uppercase mb-3">Payment</h4>
+                <div className="space-y-3">
+                  <div>
+                    <span className="text-xs font-medium text-slate-300">Method</span>
+                    <span className="text-sm font-bold text-slate-100 block mt-1">
+                      {paymentMethod === 'upi' ? 'UPI Direct' : paymentMethod === 'cash' ? 'Cash' : 'Online Gateway'}
+                    </span>
+                  </div>
+                  {paymentMethod === 'upi' && tenantSettings && (
+                    <div>
+                      <span className="text-xs font-medium text-slate-300">UPI ID</span>
+                      <span className="text-sm font-mono text-amber-400 block mt-1">{tenantSettings.upi_id}</span>
+                    </div>
+                  )}
+                  {paymentMethod === 'upi' && utrReference && (
+                    <div>
+                      <span className="text-xs font-medium text-slate-300">UTR Reference</span>
+                      <span className="text-sm font-mono text-slate-100 block mt-1">{utrReference}</span>
+                    </div>
+                  )}
+                </div>
+              </div>
+
+              <div className="mt-8 flex justify-end gap-3">
+                <button
+                  onClick={closeBill}
+                  className="px-5 py-2.5 rounded-xl text-slate-300 hover:text-slate-100 hover:bg-slate-800 transition"
+                >
+                  Edit
+                </button>
+                {paymentMethod === 'upi' ? (
+                  <button
+                    onClick={handleVerifyUpiPayment}
+                    disabled={submitting || !utrReference.trim()}
+                    className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl shadow-lg shadow-amber-500/20 disabled:opacity-60 transition"
+                  >
+                    {submitting ? 'Verifying…' : 'Verify UTR & Settle'}
+                  </button>
+                ) : (
+                  <button
+                    onClick={handlePlaceOrder}
+                    disabled={submitting}
+                    className="px-5 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl shadow-lg shadow-amber-500/20 disabled:opacity-60 transition"
+                  >
+                    {submitting ? 'Placing Order…' : 'Confirm & Pay'}
+                  </button>
+                )}
+              </div>
+            </div>
+          </div>
+        </div>
+      )}
 
       {/* Toast */}
       {toast && (
@@ -933,4 +1329,3 @@ export function MenuPage() {
     </div>
   );
 }
-

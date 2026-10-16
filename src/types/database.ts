@@ -38,6 +38,10 @@ export interface Order {
     | 'served'
     | 'cancelled';
   total: number; // stored in minor currency units (e.g. cents)
+  tip_amount: number; // stored in minor currency units (e.g. cents)
+  payment_method: 'upi' | 'cash' | 'gateway' | null;
+  payment_status: 'pending' | 'paid' | 'failed' | 'refunded';
+  utr_reference: string | null; // UPI transaction reference for direct UPI payments
   customer_name: string | null;
   order_type: string;
   table_number_display?: string;
@@ -72,6 +76,21 @@ export interface WaiterCall {
   order_id: string | null;
   message: string | null;
   status: 'pending' | 'acknowledged' | 'resolved';
+  created_at: string;
+  updated_at: string;
+}
+
+export interface TenantSettings {
+  id: string;
+  tenant_id: string;
+  upi_enabled: boolean;
+  upi_id: string | null;
+  merchant_name: string | null;
+  upi_qr_image_url: string | null;
+  upi_instruction_notes: string | null;
+  gateway_enabled: boolean;
+  gateway_provider: 'razorpay' | 'stripe' | null;
+  cash_enabled: boolean;
   created_at: string;
   updated_at: string;
 }
@@ -117,6 +136,12 @@ export interface Database {
         Row: WaiterCall & Record<string, unknown>;
         Insert: Omit<WaiterCall, 'id' | 'created_at' | 'updated_at'>;
         Update: Partial<WaiterCall>;
+        Relationships: [];
+      };
+      tenant_settings: {
+        Row: TenantSettings;
+        Insert: Omit<TenantSettings, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<TenantSettings>;
         Relationships: [];
       };
     };

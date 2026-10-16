@@ -5,8 +5,10 @@ import {
   getTenantBySlug,
   getMenuItems,
   getOrders,
+  getTenantSettings,
   getWaiterCalls,
   resolveWaiterCall,
+  upsertTenantSettings,
   hasSupabaseConfig,
   supabase,
 } from '@/lib/supabase';
@@ -31,7 +33,7 @@ import {
   X,
 } from 'lucide-react';
 
-type TabKey = 'menu' | 'orders' | 'qr';
+type TabKey = 'menu' | 'orders' | 'qr' | 'payment';
 type TableStatus = 'available' | 'pending' | 'occupied' | 'ready' | 'served';
 type MenuCategory = 'Appetizers' | 'Mains' | 'Drinks' | 'Desserts';
 
@@ -165,6 +167,28 @@ export function AdminPage() {
   const [editingItem, setEditingItem] = useState<MenuItem | null>(null);
   const [form, setForm] = useState<MenuItemFormValues>(blankMenuItemForm());
   const [deleteTargetId, setDeleteTargetId] = useState<string | null>(null);
+
+  /* Payment settings state */
+  const [settingsForm, setSettingsForm] = useState<{
+    upi_enabled: boolean;
+    upi_id: string;
+    merchant_name: string;
+    upi_qr_image_url: string;
+    upi_instruction_notes: string;
+    gateway_enabled: boolean;
+    gateway_provider: 'razorpay' | 'stripe' | null;
+    cash_enabled: boolean;
+  }>({
+    upi_enabled: false,
+    upi_id: '',
+    merchant_name: '',
+    upi_qr_image_url: '',
+    upi_instruction_notes: '',
+    gateway_enabled: false,
+    gateway_provider: null,
+    cash_enabled: true,
+  });
+  const [settingsLoading, setSettingsLoading] = useState(false);
   const [toasts, setToasts] = useState<{
     id: string;
     message: string;
@@ -206,7 +230,7 @@ export function AdminPage() {
     let cancelled = false;
     setLoading(true);
     setError(null);
-    getTenantBySlug(slug).then(({ data, error: err }) => {
+    getTenantBySlug(slug).then(async ({ data, error: err }) => {
       if (cancelled) return;
       if (err) {
         setError(err.message);
@@ -215,7 +239,26 @@ export function AdminPage() {
       }
       setTenant(data ?? null);
       if (data) {
-        void loadData();
+        await loadData();
+        // Load payment settings
+        try {
+          const { data: settings, error: settingsErr } = await getTenantSettings(data.id);
+          if (settingsErr) throw settingsErr;
+          if (settings) {
+            setSettingsForm({
+              upi_enabled: settings.upi_enabled,
+              upi_id: settings.upi_id ?? '',
+              merchant_name: settings.merchant_name ?? '',
+              upi_qr_image_url: settings.upi_qr_image_url ?? '',
+              upi_instruction_notes: settings.upi_instruction_notes ?? '',
+              gateway_enabled: settings.gateway_enabled,
+              gateway_provider: settings.gateway_provider,
+              cash_enabled: settings.cash_enabled,
+            });
+          }
+        } catch {
+          // Settings may not exist yet; defaults are already set.
+        }
       } else {
         setLoading(false);
       }
@@ -337,6 +380,30 @@ export function AdminPage() {
       addToast(err instanceof Error ? err.message : 'Failed to save menu item', 'error');
     } finally {
       setSaving(false);
+    }
+  };
+
+  const handleSaveSettings = async () => {
+    if (!tenant) return;
+    setSettingsLoading(true);
+    try {
+      const { error: dbError } = await upsertTenantSettings({
+        tenant_id: tenant.id,
+        upi_enabled: settingsForm.upi_enabled,
+        upi_id: settingsForm.upi_id.trim() || null,
+        merchant_name: settingsForm.merchant_name.trim() || null,
+        upi_qr_image_url: settingsForm.upi_qr_image_url.trim() || null,
+        upi_instruction_notes: settingsForm.upi_instruction_notes.trim() || null,
+        gateway_enabled: settingsForm.gateway_enabled,
+        gateway_provider: settingsForm.gateway_provider,
+        cash_enabled: settingsForm.cash_enabled,
+      });
+      if (dbError) throw dbError;
+      addToast('Payment settings saved');
+    } catch (err) {
+      addToast(err instanceof Error ? err.message : 'Failed to save payment settings', 'error');
+    } finally {
+      setSettingsLoading(false);
     }
   };
 
@@ -480,6 +547,7 @@ export function AdminPage() {
     { key: 'menu' as TabKey, label: 'Menu Management', icon: ShoppingBag },
     { key: 'orders' as TabKey, label: 'Live Monitor', icon: LayoutDashboard },
     { key: 'qr' as TabKey, label: 'Tables & QR', icon: QrCode },
+    { key: 'payment' as TabKey, label: 'Payment Settings', icon: DollarSign },
   ];
 
   const isInitialLoading = loading && !tenant;
@@ -1047,6 +1115,218 @@ export function AdminPage() {
                 }
                 return cards;
               })()}
+            </div>
+          </section>
+        )}
+
+        {/* ===== PAYMENT SETTINGS ===== */}
+        {tab === 'payment' && (
+          <section className="space-y-6">
+            <div className="flex flex-col md:flex-row md:items-center justify-between gap-4">
+              <div>
+                <h2 className="text-lg font-bold text-slate-100 flex items-center gap-2">
+                  <DollarSign className="w-5 h-5 text-amber-400" />
+                  Payment Settings
+                </h2>
+                <p className="text-sm text-slate-400">
+                  Configure how customers can pay at {tenant?.name}
+                </p>
+              </div>
+              <div className="flex gap-3">
+                <button
+                  onClick={handleSaveSettings}
+                  disabled={settingsLoading}
+                  className="inline-flex items-center gap-2 px-4 py-2.5 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl shadow-lg shadow-amber-500/20 disabled:opacity-60 transition"
+                >
+                  {settingsLoading ? 'Saving…' : 'Save Settings'}
+                </button>
+              </div>
+            </div>
+
+            <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-xl overflow-hidden p-6">
+              <div className="space-y-6">
+                {/* Direct UPI */}
+                <div className="border border-slate-800 rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="font-bold text-slate-100 flex items-center gap-2">
+                      Direct UPI
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSettingsForm((prev) => ({ ...prev, upi_enabled: !prev.upi_enabled }))
+                      }
+                      className={`w-10 h-5 rounded-full border p-0.5 transition ${
+                        settingsForm.upi_enabled
+                          ? 'border-amber-500 bg-amber-500'
+                          : 'border-slate-600 bg-slate-800'
+                      }`}
+                    >
+                      {settingsForm.upi_enabled ? (
+                        <ToggleRight className="w-3 h-3 ml-1 text-slate-900" />
+                      ) : (
+                        <ToggleLeft className="w-3 h-3 mr-1 text-slate-300" />
+                      )}
+                    </button>
+                  </div>
+                  {!settingsForm.upi_enabled && (
+                    <p className="text-xs text-slate-500 mb-4">
+                      Enable UPI to allow customers to pay directly via UPI QR.
+                    </p>
+                  )}
+                  {settingsForm.upi_enabled && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-400 mb-1.5">
+                          UPI ID
+                        </label>
+                        <input
+                          name="upi_id"
+                          value={settingsForm.upi_id}
+                          onChange={(e) =>
+                            setSettingsForm((prev) => ({ ...prev, upi_id: e.target.value }))
+                          }
+                          placeholder="merchant@upi"
+                          className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-100 focus:border-amber-500 focus:outline-none transition"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-400 mb-1.5">
+                          Merchant Display Name
+                        </label>
+                        <input
+                          name="merchant_name"
+                          value={settingsForm.merchant_name}
+                          onChange={(e) =>
+                            setSettingsForm((prev) => ({ ...prev, merchant_name: e.target.value }))
+                          }
+                          placeholder="Acme Bistro"
+                          className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-100 focus:border-amber-500 focus:outline-none transition"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-400 mb-1.5">
+                          Custom QR Image URL (optional)
+                        </label>
+                        <input
+                          name="upi_qr_image_url"
+                          value={settingsForm.upi_qr_image_url}
+                          onChange={(e) =>
+                            setSettingsForm((prev) => ({ ...prev, upi_qr_image_url: e.target.value }))
+                          }
+                          placeholder="https://example.com/upi-qr.png"
+                          className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-100 focus:border-amber-500 focus:outline-none transition"
+                        />
+                      </div>
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-400 mb-1.5">
+                          Instruction Notes (optional)
+                        </label>
+                        <textarea
+                          name="upi_instruction_notes"
+                          value={settingsForm.upi_instruction_notes}
+                          onChange={(e) =>
+                            setSettingsForm((prev) => ({
+                              ...prev,
+                              upi_instruction_notes: e.target.value,
+                            }))
+                          }
+                          rows={2}
+                          placeholder="e.g. Please share the UTR reference with staff"
+                          className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-100 focus:border-amber-500 focus:outline-none transition"
+                        />
+                      </div>
+                    </div>
+                  )}
+                </div>
+
+                {/* Online Payment Gateway */}
+                <div className="border border-slate-800 rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="font-bold text-slate-100 flex items-center gap-2">
+                      Online Payment Gateway
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSettingsForm((prev) => ({ ...prev, gateway_enabled: !prev.gateway_enabled }))
+                      }
+                      className={`w-10 h-5 rounded-full border p-0.5 transition ${
+                        settingsForm.gateway_enabled
+                          ? 'border-amber-500 bg-amber-500'
+                          : 'border-slate-600 bg-slate-800'
+                      }`}
+                    >
+                      {settingsForm.gateway_enabled ? (
+                        <ToggleRight className="w-3 h-3 ml-1 text-slate-900" />
+                      ) : (
+                        <ToggleLeft className="w-3 h-3 mr-1 text-slate-300" />
+                      )}
+                    </button>
+                  </div>
+                  {!settingsForm.gateway_enabled && (
+                    <p className="text-xs text-slate-500 mb-4">
+                      Enable Razorpay or Stripe integration readiness.
+                    </p>
+                  )}
+                  {settingsForm.gateway_enabled && (
+                    <div className="space-y-4">
+                      <div>
+                        <label className="block text-xs font-semibold text-slate-400 mb-1.5">
+                          Gateway Provider
+                        </label>
+                        <select
+                          name="gateway_provider"
+                          value={settingsForm.gateway_provider ?? 'razorpay'}
+                          onChange={(e) =>
+                            setSettingsForm((prev) => ({
+                              ...prev,
+                              gateway_provider: e.target.value as 'razorpay' | 'stripe',
+                            }))
+                          }
+                          className="w-full px-3 py-2 rounded-xl bg-slate-950 border border-slate-700 text-slate-100 focus:border-amber-500 focus:outline-none transition"
+                        >
+                          <option value="razorpay">Razorpay</option>
+                          <option value="stripe">Stripe</option>
+                        </select>
+                      </div>
+                      <p className="text-xs text-slate-500">
+                        Gateway credentials are configured server-side; this flag enables the
+                        online payment option in the customer checkout.
+                      </p>
+                    </div>
+                  )}
+                </div>
+
+                {/* Cash Payment */}
+                <div className="border border-slate-800 rounded-xl p-4">
+                  <div className="flex items-center justify-between mb-4">
+                    <h3 className="font-bold text-slate-100 flex items-center gap-2">
+                      Cash Payment
+                    </h3>
+                    <button
+                      type="button"
+                      onClick={() =>
+                        setSettingsForm((prev) => ({ ...prev, cash_enabled: !prev.cash_enabled }))
+                      }
+                      className={`w-10 h-5 rounded-full border p-0.5 transition ${
+                        settingsForm.cash_enabled
+                          ? 'border-amber-500 bg-amber-500'
+                          : 'border-slate-600 bg-slate-800'
+                      }`}
+                    >
+                      {settingsForm.cash_enabled ? (
+                        <ToggleRight className="w-3 h-3 ml-1 text-slate-900" />
+                      ) : (
+                        <ToggleLeft className="w-3 h-3 mr-1 text-slate-300" />
+                      )}
+                    </button>
+                  </div>
+                  <p className="text-xs text-slate-500">
+                    Allow customers to select 'Cash / Pay at Counter' at checkout.
+                  </p>
+                </div>
+              </div>
             </div>
           </section>
         )}

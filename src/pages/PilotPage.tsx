@@ -55,7 +55,7 @@ export function PilotPage() {
     const sb = supabase;
     if (!sb) return;
     try {
-      const { data: tenantData } = await sb
+      const { data: tenantData } = await (sb as any)
         .from('tenants')
         .select('*')
         .eq('slug', tenantSlug || 'acme-bistro')
@@ -65,7 +65,7 @@ export function PilotPage() {
         setTenant(tenantData);
 
         // Fetch orders with explicit menu_items query join
-        const { data: ordersData, error } = await sb
+        const { data: ordersData, error } = await (sb as any)
           .from('orders')
           .select(`
             *,
@@ -99,13 +99,13 @@ export function PilotPage() {
     const sb = supabase;
     if (!sb) return;
     try {
-      const { error } = await sb
+      const { error } = await (sb as any)
         .from('orders')
         .update(
           {
             status: newStatus as DbOrder['status'],
             ...(newStatus === 'completed' ? { served_at: new Date().toISOString() } : {}),
-          } as unknown as Partial<DbOrder>
+          } as any
         )
         .eq('id', orderId);
 
