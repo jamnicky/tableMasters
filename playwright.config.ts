@@ -18,10 +18,5 @@ export default defineConfig({
       use: { ...devices['Desktop Chrome'], viewport: { width: 1280, height: 800 } },
     },
   ],
-  webServer: {
-    command: 'npm run preview',
-    port: 5173,
-    timeout: 120000,
-    reuseExistingServer: !process.env.CI,
-  },
+  // Dev server is already running on port 5173 (started separately)
 });

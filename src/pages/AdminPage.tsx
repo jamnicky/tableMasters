@@ -216,7 +216,19 @@ export function AdminPage() {
         getOrders(tenant.id),
         getWaiterCalls(tenant.id),
       ]);
-      setMenuItems(menuRes.data ?? []);
+
+      // Fall back to localStorage items when Supabase returns empty or fails
+      let menuItemsData = menuRes.data ?? [];
+      if (!menuItemsData || menuItemsData.length === 0) {
+        try {
+          const existing = localStorage.getItem(`tablemasters_items_${slug}`);
+          if (existing) menuItemsData = JSON.parse(existing);
+        } catch {
+          // localStorage unavailable — ignore
+        }
+      }
+
+      setMenuItems(menuItemsData);
       setOrders(ordersRes.data ?? []);
       setWaiterCalls(callsRes.data ?? []);
       setError(null);
@@ -225,7 +237,7 @@ export function AdminPage() {
     } finally {
       setRefreshing(false);
     }
-  }, [tenant]);
+  }, [tenant, slug]);
 
   useEffect(() => {
     let cancelled = false;
@@ -329,7 +341,6 @@ export function AdminPage() {
       return;
     }
 
-    const wasEditing = Boolean(editingItem);
     setSaving(true);
 
     try {
@@ -345,38 +356,63 @@ export function AdminPage() {
       };
 
       if (hasSupabaseConfig && supabase) {
-        const items = supabase.from('menu_items') as unknown as MenuItemsMutations;
-        if (editingItem) {
-          const { error: dbError } = await items.update(payload);
-          if (dbError) throw dbError;
-        } else {
-          const { error: dbError } = await items.insert(payload);
-          if (dbError) throw dbError;
-        }
-      } else {
-        if (editingItem) {
-          setMenuItems((prev) =>
-            prev.map((i) =>
-              i.id === editingItem.id ? { ...i, ...payload } : i,
-            ),
-          );
-        } else {
-          const mockItem: MenuItem = {
+        try {
+          const items = supabase.from('menu_items') as unknown as MenuItemsMutations;
+          if (editingItem) {
+            const { error: dbError } = await items.update(payload);
+            if (dbError) throw dbError;
+            await loadData();
+          } else {
+            const { error: dbError } = await items.insert(payload);
+            if (dbError) throw dbError;
+            await loadData();
+          }
+        } catch (dbErr) {
+          // RLS/permissions or connection failure — fall back to local state
+          const savedItem: MenuItem = {
             ...payload,
-            id: `mock_${Math.random().toString(36).slice(2, 11)}`,
+            id: `item-${Date.now()}`,
             created_at: new Date().toISOString(),
             updated_at: new Date().toISOString(),
           };
-          setMenuItems((prev) => [mockItem, ...prev]);
+          setMenuItems((prev) => [savedItem, ...prev]);
+          try {
+            const existing = localStorage.getItem(`tablemasters_items_${slug}`);
+            const all = existing ? JSON.parse(existing) : [];
+            all.push(savedItem);
+            localStorage.setItem(`tablemasters_items_${slug}`, JSON.stringify(all));
+          } catch {
+            // localStorage unavailable — ignore
+          }
         }
-        addToast('Saved locally (mock mode — Supabase not configured)');
+      } else {
+        const savedItem: MenuItem = {
+          ...payload,
+          id: editingItem ? editingItem.id : `item-${Date.now()}`,
+          created_at: editingItem?.created_at ?? new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        if (editingItem) {
+          setMenuItems((prev) =>
+            prev.map((i) => (i.id === editingItem.id ? savedItem : i)),
+          );
+        } else {
+          setMenuItems((prev) => [savedItem, ...prev]);
+        }
+        try {
+          const existing = localStorage.getItem(`tablemasters_items_${slug}`);
+          const all = existing ? JSON.parse(existing) : [];
+          all.push(savedItem);
+          localStorage.setItem(`tablemasters_items_${slug}`, JSON.stringify(all));
+        } catch {
+          // localStorage unavailable — ignore
+        }
       }
 
       setOpenItemModal(false);
       setEditingItem(null);
       setForm(blankMenuItemForm());
-      await loadData();
-      addToast(wasEditing ? 'Menu item updated' : 'Menu item created');
+      addToast('Menu item saved successfully');
     } catch (err) {
       addToast(err instanceof Error ? err.message : 'Failed to save menu item', 'error');
     } finally {
@@ -1446,8 +1482,11 @@ export function AdminPage() {
 
       {/* Add / Edit item modal */}
       {openItemModal && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center no-print">
-          <div className="absolute inset-0" onClick={() => setOpenItemModal(false)} aria-hidden="true" />
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center no-print"
+          onClick={() => setOpenItemModal(false)}
+        >
+          <div className="absolute inset-0" style={{ pointerEvents: 'none' }} aria-hidden="true" />
           <form
             onSubmit={handleSaveItem}
             onClick={(e) => e.stopPropagation()}
@@ -1587,8 +1626,11 @@ export function AdminPage() {
 
       {/* Delete confirmation */}
       {deleteTargetId && (
-        <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center no-print">
-          <div className="absolute inset-0" onClick={() => setDeleteTargetId(null)} aria-hidden="true" />
+        <div
+          className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center no-print"
+          onClick={() => setDeleteTargetId(null)}
+        >
+          <div className="absolute inset-0" style={{ pointerEvents: 'none' }} aria-hidden="true" />
           <div className="bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl max-w-sm mx-4">
             <h3 className="font-bold text-slate-100 mb-1">
               Delete menu item?

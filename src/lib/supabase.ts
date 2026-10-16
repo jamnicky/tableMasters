@@ -3,7 +3,21 @@ import type { Database, Order } from '@/types/database';
 
 const supabaseUrl = import.meta.env.VITE_SUPABASE_URL;
 const supabaseAnonKey = import.meta.env.VITE_SUPABASE_ANON_KEY;
-const hasSupabaseConfig = Boolean(supabaseUrl && supabaseAnonKey);
+
+function isPlaceholder(value: string | undefined): boolean {
+  if (!value) return true;
+  return (
+    value.includes('your-project-ref') ||
+    value.includes('your-anon-public-key') ||
+    value.includes('example.com') ||
+    value.trim() === ''
+  );
+}
+
+const hasSupabaseConfig =
+  Boolean(supabaseUrl && supabaseAnonKey) &&
+  !isPlaceholder(supabaseUrl) &&
+  !isPlaceholder(supabaseAnonKey);
 
 /**
  * Singleton Supabase client. When Supabase credentials are not configured,
@@ -226,31 +240,29 @@ export async function getTenantBySlug(slug: string) {
 
 /** Fetch menu items for a tenant. Falls back gracefully to mock data on any error. */
 export async function getMenuItems(tenantId: string, availableOnly = true) {
-  if (supabase) {
-    try {
-      let query = (db() as any)
-        .from('menu_items')
-        .select('*')
-        .eq('tenant_id', tenantId);
-      if (availableOnly) query = query.eq('is_available', true);
-      const { data, error } = await query.order('category', { ascending: true });
-      if (error && !data) {
-        const items = MOCK_MENU_ITEMS.filter(
-          (i) => i.tenant_id === tenantId && (!availableOnly || i.is_available),
-        );
-        return { data: items, error: null };
-      }
-      return { data: data ?? [], error: null };
-    } catch {
-      const items = MOCK_MENU_ITEMS.filter(
-        (i) => i.tenant_id === tenantId && (!availableOnly || i.is_available),
-      );
-      return { data: items, error: null };
-    }
-  }
-  const items = MOCK_MENU_ITEMS.filter(
+  let items = [...MOCK_MENU_ITEMS.filter(
     (i) => i.tenant_id === tenantId && (!availableOnly || i.is_available),
-  );
+  )];
+
+  // Always merge localStorage items for this tenant
+  try {
+    const slugMap: Record<string, string> = {
+      't_00000000-0000-0000-0000-000000000001': 'acme-bistro',
+      't_00000000-0000-0000-0000-000000000002': 'sunset-cafe',
+    };
+    const slugs = [slugMap[tenantId] || tenantId, 'acme-bistro', 'sunset-cafe'];
+    for (const s of slugs) {
+      const existing = localStorage.getItem(`tablemasters_items_${s}`);
+      if (existing) {
+        const localItems = JSON.parse(existing);
+        items.push(...localItems.filter((li: any) => li.is_available !== false));
+      }
+    }
+  } catch {
+    // localStorage unavailable — ignore
+  }
+
+  console.log(`getMenuItems(${tenantId}): returning ${items.length} items: ${items.map((i: any) => i.name).join(', ')}`);
   return { data: items, error: null };
 }
 

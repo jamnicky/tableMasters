@@ -637,6 +637,7 @@ export function MenuPage() {
 
   /* Open digital bill (tip + payment) */
   const openBill = useCallback(() => {
+    setIsCartOpen(false);
     setIsBillOpen(true);
   }, []);
 
@@ -873,7 +874,9 @@ export function MenuPage() {
       {modalItem && (
         <div
           className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4 md:p-6"
-          onClick={closeModal}
+          onClick={(e) => {
+            if (e.target === e.currentTarget) closeModal();
+          }}
           role="dialog"
           aria-modal="true"
           aria-label={modalItem.name}
@@ -1013,6 +1016,9 @@ export function MenuPage() {
       )}
 
       {/* Cart drawer */}
+      {isCartOpen && (
+        <div className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" onClick={() => setIsCartOpen(false)} />
+      )}
       <div className="fixed top-0 right-0 z-50 h-full w-full max-w-md overflow-y-auto">
         <div
           className={`flex flex-col h-full bg-slate-900 border-l border-slate-800 shadow-2xl transition-transform duration-300 ease-in-out ${
@@ -1274,9 +1280,6 @@ export function MenuPage() {
             </div>
           )}
         </div>
-        {isCartOpen && !isBillOpen && (
-          <div className="fixed inset-0 z-40 bg-black/60 backdrop-blur-sm" onClick={() => setIsCartOpen(false)} aria-hidden="true" />
-        )}
       </div>
 
       {/* Digital Bill / Tip modal */}
