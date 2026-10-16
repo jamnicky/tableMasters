@@ -367,6 +367,8 @@ export function WaiterTerminalPage() {
 
       showToast(`Table ${activeTable} order fired to kitchen`, 'success');
       closeOrderModal();
+      // Force-refresh table status so the grid reflects Seated/Cooking immediately
+      void loadData();
     } catch (err) {
       showToast('Failed to place order', 'error');
       console.error(err);

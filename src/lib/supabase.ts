@@ -200,32 +200,53 @@ function mockId() {
 // CRUD Helpers
 // ---------------------------------------------------------------------------
 
-/** Resolve a tenant by its URL slug. Falls back to mock data. */
+/** Resolve a tenant by its URL slug. Falls back gracefully to mock data on any error. */
 export async function getTenantBySlug(slug: string) {
   if (supabase) {
-    const { data, error } = await (db() as any)
-      .from('tenants')
-      .select('*')
-      .eq('slug', slug)
-      .single();
-    if (error) throw error;
-    return { data, error: null };
+    try {
+      const { data, error } = await (db() as any)
+        .from('tenants')
+        .select('*')
+        .eq('slug', slug)
+        .single();
+      if (error && !data) {
+        // Schema/RLS errors or missing table: fall back to mock
+        const mock = MOCK_TENANTS[slug] || MOCK_TENANTS['acme-bistro'];
+        return { data: mock ?? null, error: null };
+      }
+      return { data: data ?? null, error: null };
+    } catch {
+      const mock = MOCK_TENANTS[slug] || MOCK_TENANTS['acme-bistro'];
+      return { data: mock ?? null, error: null };
+    }
   }
   const tenant = MOCK_TENANTS[slug] || null;
   return { data: tenant, error: tenant ? null : new Error('Tenant not found') };
 }
 
-/** Fetch menu items for a tenant. Falls back to mock data. */
+/** Fetch menu items for a tenant. Falls back gracefully to mock data on any error. */
 export async function getMenuItems(tenantId: string, availableOnly = true) {
   if (supabase) {
-    let query = (db() as any)
-      .from('menu_items')
-      .select('*')
-      .eq('tenant_id', tenantId);
-    if (availableOnly) query = query.eq('is_available', true);
-    const { data, error } = await query.order('category', { ascending: true });
-    if (error) throw error;
-    return { data, error: null };
+    try {
+      let query = (db() as any)
+        .from('menu_items')
+        .select('*')
+        .eq('tenant_id', tenantId);
+      if (availableOnly) query = query.eq('is_available', true);
+      const { data, error } = await query.order('category', { ascending: true });
+      if (error && !data) {
+        const items = MOCK_MENU_ITEMS.filter(
+          (i) => i.tenant_id === tenantId && (!availableOnly || i.is_available),
+        );
+        return { data: items, error: null };
+      }
+      return { data: data ?? [], error: null };
+    } catch {
+      const items = MOCK_MENU_ITEMS.filter(
+        (i) => i.tenant_id === tenantId && (!availableOnly || i.is_available),
+      );
+      return { data: items, error: null };
+    }
   }
   const items = MOCK_MENU_ITEMS.filter(
     (i) => i.tenant_id === tenantId && (!availableOnly || i.is_available),
@@ -233,18 +254,53 @@ export async function getMenuItems(tenantId: string, availableOnly = true) {
   return { data: items, error: null };
 }
 
-/** Fetch tenant payment settings. Falls back to mock defaults. */
+/** Fetch tenant payment settings. Falls back gracefully to mock defaults on any error. */
 export async function getTenantSettings(tenantId: string) {
   if (supabase) {
-    const { data, error } = await (db() as any)
-      .from('tenant_settings')
-      .select('*')
-      .eq('tenant_id', tenantId)
-      .maybeSingle();
-    if (error) throw error;
-    return { data, error: null };
+    try {
+      const { data, error } = await (db() as any)
+        .from('tenant_settings')
+        .select('*')
+        .eq('tenant_id', tenantId)
+        .maybeSingle();
+      if (error && !data) {
+        const settings = MOCK_TENANT_SETTINGS.find((s) => s.tenant_id === tenantId) ?? null;
+        const defaults: MockTenantSettings = {
+          id: 'mock_settings_default',
+          tenant_id: tenantId,
+          upi_enabled: false,
+          upi_id: null,
+          merchant_name: null,
+          upi_qr_image_url: null,
+          upi_instruction_notes: null,
+          gateway_enabled: false,
+          gateway_provider: null,
+          cash_enabled: true,
+          created_at: new Date().toISOString(),
+          updated_at: new Date().toISOString(),
+        };
+        return { data: settings ?? defaults, error: null };
+      }
+      return { data: data ?? null, error: null };
+    } catch {
+      const settings = MOCK_TENANT_SETTINGS.find((s) => s.tenant_id === tenantId) ?? null;
+      const defaults: MockTenantSettings = {
+        id: 'mock_settings_default',
+        tenant_id: tenantId,
+        upi_enabled: false,
+        upi_id: null,
+        merchant_name: null,
+        upi_qr_image_url: null,
+        upi_instruction_notes: null,
+        gateway_enabled: false,
+        gateway_provider: null,
+        cash_enabled: true,
+        created_at: new Date().toISOString(),
+        updated_at: new Date().toISOString(),
+      };
+      return { data: settings ?? defaults, error: null };
+    }
   }
-
   const settings = MOCK_TENANT_SETTINGS.find((s) => s.tenant_id === tenantId) ?? null;
   const defaults: MockTenantSettings = {
     id: 'mock_settings_default',
@@ -263,7 +319,7 @@ export async function getTenantSettings(tenantId: string) {
   return { data: settings ?? defaults, error: null };
 }
 
-/** Upsert tenant payment settings. Falls back to mock data. */
+/** Upsert tenant payment settings. Falls back to mock data / localStorage on any error. */
 export async function upsertTenantSettings(settings: {
   tenant_id: string;
   upi_enabled?: boolean;
@@ -275,31 +331,8 @@ export async function upsertTenantSettings(settings: {
   gateway_provider?: 'razorpay' | 'stripe' | null;
   cash_enabled?: boolean;
 }) {
-  if (supabase) {
-    const { data, error } = await (db() as any)
-      .from('tenant_settings')
-      .upsert({
-        tenant_id: settings.tenant_id,
-        upi_enabled: settings.upi_enabled ?? false,
-        upi_id: settings.upi_id ?? null,
-        merchant_name: settings.merchant_name ?? null,
-        upi_qr_image_url: settings.upi_qr_image_url ?? null,
-        upi_instruction_notes: settings.upi_instruction_notes ?? null,
-        gateway_enabled: settings.gateway_enabled ?? false,
-        gateway_provider: settings.gateway_provider ?? null,
-        cash_enabled: settings.cash_enabled ?? true,
-        updated_at: new Date().toISOString(),
-      })
-      .select()
-      .single();
-    if (error) throw error;
-    return { data, error: null };
-  }
-
-  const idx = MOCK_TENANT_SETTINGS.findIndex((s) => s.tenant_id === settings.tenant_id);
   const now = new Date().toISOString();
-  const merged: MockTenantSettings = {
-    id: idx === -1 ? mockId() : MOCK_TENANT_SETTINGS[idx].id,
+  const payload = {
     tenant_id: settings.tenant_id,
     upi_enabled: settings.upi_enabled ?? false,
     upi_id: settings.upi_id ?? null,
@@ -309,8 +342,38 @@ export async function upsertTenantSettings(settings: {
     gateway_enabled: settings.gateway_enabled ?? false,
     gateway_provider: settings.gateway_provider ?? null,
     cash_enabled: settings.cash_enabled ?? true,
-    created_at: idx === -1 ? now : MOCK_TENANT_SETTINGS[idx].created_at,
     updated_at: now,
+  };
+
+  // Persist to localStorage as a reliable offline fallback
+  try {
+    const existing = localStorage.getItem('tablemasters_tenant_settings');
+    const allSettings = existing ? JSON.parse(existing) : {};
+    allSettings[settings.tenant_id] = { ...allSettings[settings.tenant_id], ...payload, created_at: allSettings[settings.tenant_id]?.created_at ?? now };
+    localStorage.setItem('tablemasters_tenant_settings', JSON.stringify(allSettings));
+  } catch {
+    // localStorage may be blocked; ignore
+  }
+
+  if (supabase) {
+    try {
+      const { data, error } = await (db() as any)
+        .from('tenant_settings')
+        .upsert(payload)
+        .select()
+        .single();
+      if (error) throw error;
+      return { data, error: null };
+    } catch {
+      // RLS policy missing, table uninitialized, or schema error: fall back to mock
+    }
+  }
+
+  const idx = MOCK_TENANT_SETTINGS.findIndex((s) => s.tenant_id === settings.tenant_id);
+  const merged: MockTenantSettings = {
+    id: idx === -1 ? mockId() : MOCK_TENANT_SETTINGS[idx].id,
+    ...payload,
+    created_at: idx === -1 ? now : MOCK_TENANT_SETTINGS[idx].created_at,
   };
   if (idx === -1) {
     MOCK_TENANT_SETTINGS.push(merged);

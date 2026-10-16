@@ -1152,7 +1152,7 @@ export function AdminPage() {
                 const cards: JSX.Element[] = [];
                 for (let n = 1; n <= TABLE_COUNT; n += 1) {
                   const url = `${window.location.origin}/${slug}/menu?table=${n}`;
-                  const qrUrl = `https://chart.googleapis.com/chart?chs=400x400&cht=qr&chl=${encodeURIComponent(url)}&choe=UTF-8`;
+                  const qrUrl = `https://api.qrserver.com/v1/create-qr-code/?size=200x200&data=${encodeURIComponent(url)}`;
                   cards.push(
                     <div
                       key={n}
@@ -1438,7 +1438,11 @@ export function AdminPage() {
       {openItemModal && (
         <div className="fixed inset-0 z-50 bg-black/60 backdrop-blur-sm flex items-center justify-center no-print">
           <div className="absolute inset-0" onClick={() => setOpenItemModal(false)} aria-hidden="true" />
-          <form onSubmit={handleSaveItem} className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl mx-4">
+          <form
+            onSubmit={handleSaveItem}
+            onClick={(e) => e.stopPropagation()}
+            className="w-full max-w-lg bg-slate-900 border border-slate-800 rounded-2xl p-6 shadow-2xl mx-4"
+          >
             <div className="flex justify-between items-center mb-6">
               <h3 className="text-lg font-bold text-slate-100">
                 {editingItem ? 'Edit menu item' : 'Add menu item'}
