@@ -642,9 +642,19 @@ export function AdminPage() {
       <header className="mb-8 flex flex-col md:flex-row md:items-center justify-between gap-3 border-b border-slate-800 pb-4 no-print">
         <div className="flex flex-col gap-1">
           <nav className="text-xs text-slate-500 flex items-center gap-1">
-            <span>Admin</span>
+            <a
+              href="/"
+              className="text-amber-400 hover:text-amber-300 underline hover:no-underline transition"
+            >
+              Admin
+            </a>
             <ChevronRight className="w-3 h-3 shrink-0" />
-            <span>{tenant.name}</span>
+            <a
+              href={`/${slug}/admin`}
+              className="text-[#111c2d] hover:text-[#a33900] underline hover:no-underline transition font-medium"
+            >
+              {tenant.name}
+            </a>
           </nav>
           <div className="flex items-center gap-3">
             <div className="p-3 bg-amber-500/10 text-amber-400 rounded-xl shadow-lg shadow-amber-500/10">

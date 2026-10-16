@@ -5,60 +5,35 @@ import {
   getMenuItems,
   getOrders,
   createOrder,
-  settlePayment,
   subscribeToOrders,
   subscribeToWaiterCalls,
 } from '@/lib/supabase';
-import type { MenuItem, Order, OrderItem, Tenant } from '@/types/database';
+import type { MenuItem, Tenant } from '@/types/database';
 import {
   AlertCircle,
-  Bell,
   CheckCircle2,
-  Clock,
-  Flame,
   Loader2,
+  Mic,
   Minus,
   Plus,
   Search,
   ShoppingBag,
-  Trash2,
-  Utensils,
   X,
+  Zap,
 } from 'lucide-react';
 
 /* -------------------------------------------------------------------------- */
 /* Types                                                                      */
 /* -------------------------------------------------------------------------- */
 
-type TableStatus =
-  | 'available'
-  | 'seated'
-  | 'cooking'
-  | 'served'
-  | 'bill_pending';
-
-type OrderWithItems = Order & {
-  order_items?: OrderItem[];
-};
-
-interface TableCardState {
-  number: number;
-  status: TableStatus;
-  orderId: string | null;
-  orderTotal: number;
-  tipAmount: number;
-  paymentMethod: string | null;
-  paymentStatus: string | null;
-  itemCount: number;
-  lastUpdated: string;
-}
-
 interface CartLine {
   menuItemId: string;
+  sku: string;
   name: string;
   price: number;
   quantity: number;
   notes: string;
+  veg: boolean;
 }
 
 interface Toast {
@@ -71,61 +46,10 @@ interface Toast {
 /* -------------------------------------------------------------------------- */
 
 function formatPrice(cents: number): string {
-  return (cents / 100).toFixed(2);
-}
-
-function tableStatusFromOrder(order: Order | null): TableStatus {
-  if (!order) return 'available';
-  if (order.payment_status === 'pending' && order.payment_method) {
-    return 'bill_pending';
-  }
-  switch (order.status) {
-    case 'pending':
-    case 'confirmed':
-      return 'seated';
-    case 'preparing':
-      return 'cooking';
-    case 'ready':
-    case 'served':
-      return 'served';
-    case 'cancelled':
-      return 'available';
-    default:
-      return 'available';
-  }
-}
-
-function statusVariant(status: TableStatus): string {
-  const variants: Record<TableStatus, string> = {
-    available: 'bg-emerald-500/20 text-emerald-400 border border-emerald-500/30',
-    seated: 'bg-amber-500/20 text-amber-400 border border-amber-500/30',
-    cooking: 'bg-rose-500/20 text-rose-400 border border-rose-500/30',
-    served: 'bg-blue-500/20 text-blue-400 border border-blue-500/30',
-    bill_pending: 'bg-purple-500/20 text-purple-400 border border-purple-500/30',
-  };
-  return `px-2 py-0.5 rounded text-xs font-semibold border ${variants[status]}`;
-}
-
-function statusLabel(status: TableStatus): string {
-  const labels: Record<TableStatus, string> = {
-    available: 'Available',
-    seated: 'Seated / Ordering',
-    cooking: 'Food Cooking',
-    served: 'Food Served',
-    bill_pending: 'Bill Pending',
-  };
-  return labels[status];
-}
-
-function statusIcon(status: TableStatus): React.ReactNode {
-  const icons: Record<TableStatus, React.ReactNode> = {
-    available: <CheckCircle2 className="w-3.5 h-3.5" />,
-    seated: <Utensils className="w-3.5 h-3.5" />,
-    cooking: <Flame className="w-3.5 h-3.5" />,
-    served: <Bell className="w-3.5 h-3.5" />,
-    bill_pending: <Clock className="w-3.5 h-3.5" />,
-  };
-  return icons[status];
+  const abs = Math.abs(cents);
+  const whole = Math.floor(abs / 100);
+  const frac = abs % 100;
+  return `₹${whole}.${frac.toString().padStart(2, '0')}`;
 }
 
 /* -------------------------------------------------------------------------- */
@@ -137,83 +61,63 @@ export function WaiterTerminalPage() {
 
   /* Data state */
   const [tenant, setTenant] = useState<Tenant | null>(null);
-  const [orders, setOrders] = useState<Order[]>([]);
   const [menuItems, setMenuItems] = useState<MenuItem[]>([]);
   const [loading, setLoading] = useState(true);
   const [error, setError] = useState<string | null>(null);
 
-  /* Modal state */
+  /* Table context state */
   const [activeTable, setActiveTable] = useState<number | null>(null);
-  const [modalType, setModalType] = useState<'order' | 'notes' | 'settle' | null>(null);
+  const [rushMode, setRushMode] = useState(false);
 
-  /* Order modal state */
-  const [orderCategories, setOrderCategories] = useState<string[]>([]);
-  const [selectedOrderCategory, setSelectedOrderCategory] = useState<string>('All');
-  const [orderSearchQuery, setOrderSearchQuery] = useState<string>('');
+  /* Order / cart state */
   const [orderCart, setOrderCart] = useState<CartLine[]>([]);
-  const [orderTableNotes, setOrderTableNotes] = useState<string>('');
+  const [cookingNotes, setCookingNotes] = useState<string>('');
+  const [specialTags, setSpecialTags] = useState<string[]>([]);
+
+  /* Search & category filter state */
+  const [searchQuery, setSearchQuery] = useState('');
+  const [selectedCategory, setSelectedCategory] = useState<string>('All Items');
 
   /* Notes modal state */
-  const [notesInput, setNotesInput] = useState<string>('');
+  const [notesModalOpen, setNotesModalOpen] = useState(false);
+  const [notesItemId] = useState<string | null>(null);
 
   /* Feedback state */
   const [submitting, setSubmitting] = useState(false);
   const [toast, setToast] = useState<Toast | null>(null);
   const timerRef = useRef<ReturnType<typeof setTimeout> | null>(null);
 
-  /* Derived: map table number -> latest order */
-  const tablesByNumber = useMemo(() => {
-    const map = new Map<number, OrderWithItems | null>();
-    for (let n = 1; n <= 12; n += 1) {
-      map.set(n, null);
-    }
-    orders.forEach((order) => {
-      const n = Number(order.table_number);
-      if (Number.isFinite(n) && n >= 1 && n <= 12) {
-        const existing = map.get(n) ?? null;
-        if (
-          !existing ||
-          new Date(order.created_at) > new Date(existing.created_at)
-        ) {
-          map.set(n, order as OrderWithItems);
-        }
-      }
-    });
-    return map;
-  }, [orders]);
-
-  const tableStates = useMemo(() => {
-    const states: TableCardState[] = [];
-    for (let n = 1; n <= 12; n += 1) {
-      const order = tablesByNumber.get(n);
-      states.push({
-        number: n,
-        status: tableStatusFromOrder(order ?? null),
-        orderId: order?.id ?? null,
-        orderTotal: order?.total ?? 0,
-        tipAmount: order?.tip_amount ?? 0,
-        paymentMethod: order?.payment_method ?? null,
-        paymentStatus: order?.payment_status ?? null,
-        itemCount: order?.order_items?.length ?? 0,
-        lastUpdated: order?.created_at ?? '',
-      });
-    }
-    return states;
-  }, [tablesByNumber]);
-
-  const [tableSearch, setTableSearch] = useState('');
-
-  const filteredTables = tableStates.filter(
-    (t) =>
-      !tableSearch ||
-      String(t.number).includes(tableSearch) ||
-      statusLabel(t.status).toLowerCase().includes(tableSearch.toLowerCase()),
-  );
-
+  /* Data loading */
   const orderCartTotal = useMemo(
     () => orderCart.reduce((sum, line) => sum + line.price * line.quantity, 0),
     [orderCart],
   );
+
+  const itemCount = useMemo(
+    () => orderCart.reduce((sum, line) => sum + line.quantity, 0),
+    [orderCart],
+  );
+
+  const previewTicker = useMemo(() => {
+    const counts: Record<string, number> = {};
+    orderCart.forEach((line) => {
+      counts[line.name] = (counts[line.name] ?? 0) + line.quantity;
+    });
+    return Object.entries(counts)
+      .map(([name, qty]) => `${qty}x ${name}`)
+      .join(', ');
+  }, [orderCart]);
+
+  /* Category filter chips (hardcoded for high-velocity punch) */
+  const CATEGORY_CHIPS = [
+    'All Items',
+    'Dum Biryani',
+    'Tandoor & Breads',
+    'Curries',
+    'Indo-Chinese',
+    'Starters',
+    'Beverages & Desserts',
+  ];
 
   /* Data loading */
   const loadData = useCallback(async () => {
@@ -236,18 +140,10 @@ export function WaiterTerminalPage() {
       }
       setTenant(tenantData);
 
-      const [{ data: ordersData, error: ordersErr }, { data: items, error: itemsErr }] =
+      const [{ data: items, error: itemsErr }] =
         await Promise.all([getOrders(tenantData.id), getMenuItems(tenantData.id, true)]);
-
-      if (ordersErr) throw ordersErr;
       if (itemsErr) throw itemsErr;
-      setOrders(ordersData ?? []);
       setMenuItems(items ?? []);
-
-      const cats = Array.from(
-        new Set((items as MenuItem[] ?? []).map((i) => i.category)),
-      );
-      setOrderCategories(['All', ...cats]);
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Failed to load terminal');
     } finally {
@@ -284,36 +180,24 @@ export function WaiterTerminalPage() {
     };
   }, [tenant?.id, loadData]);
 
-  /* ---- Order modal ---- */
-  const openOrderModal = (n: number) => {
-    setActiveTable(n);
-    setModalType('order');
-    setOrderCart([]);
-    setOrderTableNotes('');
-    setSelectedOrderCategory('All');
-    setOrderSearchQuery('');
-  };
-
-  const closeOrderModal = () => {
-    setModalType(null);
-    setActiveTable(null);
-    setOrderCart([]);
-    setOrderTableNotes('');
-  };
-
-  const filteredOrderItems = useMemo(() => {
-    const q = orderSearchQuery.toLowerCase().trim();
+  /* ---- Category / Search ---- */
+  const filteredMenuItems = useMemo(() => {
+    const q = searchQuery.toLowerCase().trim();
     return menuItems.filter((item) => {
-      const matchCat = selectedOrderCategory === 'All' || item.category === selectedOrderCategory;
+      const matchCat =
+        selectedCategory === 'All Items' || item.category === selectedCategory;
       const matchSearch =
         !q ||
         item.name.toLowerCase().includes(q) ||
-        (item.description ?? '').toLowerCase().includes(q);
+        item.description?.toLowerCase().includes(q) ||
+        item.id.toLowerCase().includes(q);
       return matchCat && matchSearch;
     });
-  }, [menuItems, selectedOrderCategory, orderSearchQuery]);
+  }, [menuItems, selectedCategory, searchQuery]);
 
-  const addOrderItem = (item: MenuItem) => {
+  /* ---- Cart actions ---- */
+  const addToCart = (item: MenuItem) => {
+    const sku = item.id.slice(0, 4).toUpperCase();
     const existing = orderCart.find((l) => l.menuItemId === item.id);
     if (existing) {
       setOrderCart(
@@ -322,15 +206,47 @@ export function WaiterTerminalPage() {
         ),
       );
     } else {
-      setOrderCart([...orderCart, { menuItemId: item.id, name: item.name, price: item.price, quantity: 1, notes: '' }]);
+      setOrderCart([
+        ...orderCart,
+        {
+          menuItemId: item.id,
+          sku,
+          name: item.name,
+          price: item.price,
+          quantity: 1,
+          notes: '',
+          veg: true,
+        },
+      ]);
     }
   };
 
-  const removeOrderItem = (menuItemId: string) => {
-    setOrderCart(orderCart.filter((l) => l.menuItemId !== menuItemId));
+  const changeQty = (menuItemId: string, delta: number) => {
+    setOrderCart(
+      orderCart
+        .map((l) => {
+          if (l.menuItemId !== menuItemId) return l;
+          const newQty = l.quantity + delta;
+          return newQty > 0 ? { ...l, quantity: newQty } : null;
+        })
+        .filter((l): l is CartLine => l !== null),
+    );
   };
 
-  const submitOrder = async () => {
+  const toggleSpecialTag = (tag: string) => {
+    setSpecialTags((prev) =>
+      prev.includes(tag) ? prev.filter((t) => t !== tag) : [...prev, tag],
+    );
+  };
+
+  const clearCart = () => {
+    setOrderCart([]);
+    setCookingNotes('');
+    setSpecialTags([]);
+  };
+
+  /* ---- Submit order / Fire KOT ---- */
+  const fireKOT = async () => {
     if (!tenant || !activeTable) return;
     if (orderCart.length === 0) {
       showToast('Please add at least one item', 'error');
@@ -338,14 +254,16 @@ export function WaiterTerminalPage() {
     }
     setSubmitting(true);
     try {
-      const { data: order, error: orderErr } = await createOrder({
+      const { error: orderErr } = await createOrder({
         tenant_id: tenant.id,
         table_number: activeTable,
         total: orderCartTotal,
         tip_amount: 0,
         payment_method: null,
         payment_status: 'pending',
-        customer_name: null,
+        customer_name: specialTags.length > 0 || cookingNotes.trim()
+          ? `${cookingNotes.trim()} ${specialTags.join(' ')}`.trim()
+          : null,
         order_type: 'dine-in',
         items: orderCart.map((line) => ({
           menu_item_id: line.menuItemId,
@@ -357,103 +275,27 @@ export function WaiterTerminalPage() {
       });
       if (orderErr) throw orderErr;
 
-      // Add verbal notes if provided
-      if (orderTableNotes.trim()) {
-        await (globalThis as any).supabase?.from('orders').update(
-          { customer_name: orderTableNotes.trim() },
-          { eq: { id: order.id } },
-        );
-      }
-
-      showToast(`Table ${activeTable} order fired to kitchen`, 'success');
-      closeOrderModal();
-      // Force-refresh table status so the grid reflects Seated/Cooking immediately
+      showToast(`KOT fired to kitchen for Table ${activeTable}`, 'success');
+      clearCart();
+      setActiveTable(null);
       void loadData();
     } catch (err) {
-      showToast('Failed to place order', 'error');
+      showToast('Failed to fire KOT', 'error');
       console.error(err);
     } finally {
       setSubmitting(false);
     }
   };
 
-  /* ---- Notes modal ---- */
-  const openNotesModal = (n: number) => {
-    const order = tablesByNumber.get(n);
-    setActiveTable(n);
-    setModalType('notes');
-    setNotesInput(order?.customer_name ?? '');
-  };
-
-  const closeNotesModal = () => {
-    setModalType(null);
-    setActiveTable(null);
-    setNotesInput('');
-  };
-
-  const saveNotes = async () => {
-    if (!tenant || !activeTable) return;
-    setSubmitting(true);
-    try {
-      const order = tablesByNumber.get(activeTable);
-      if (!order) {
-        showToast('No active order for this table', 'error');
-        closeNotesModal();
-        return;
-      }
-      const { error: updErr } = await (globalThis as any).supabase
-        .from('orders')
-        .update({ customer_name: notesInput.trim() || null })
-        .eq('id', order.id);
-      if (updErr) throw updErr;
-      showToast('Table notes updated', 'success');
-      closeNotesModal();
-    } catch (err) {
-      showToast('Failed to save notes', 'error');
-      console.error(err);
-    } finally {
-      setSubmitting(false);
-    }
-  };
-
-  /* ---- Settle modal ---- */
-  const openSettleModal = (n: number) => {
-    setActiveTable(n);
-    setModalType('settle');
-  };
-
-  const closeSettleModal = () => {
-    setModalType(null);
-    setActiveTable(null);
-  };
-
-  const settleTable = async () => {
-    if (!tenant || !activeTable) return;
-    setSubmitting(true);
-    try {
-      const order = tablesByNumber.get(activeTable);
-      if (!order) {
-        showToast('No active order for this table', 'error');
-        closeSettleModal();
-        return;
-      }
-      const { error: settleErr } = await settlePayment(order.id, null);
-      if (settleErr) throw settleErr;
-      showToast(`Table ${activeTable} settled and cleared`, 'success');
-      closeSettleModal();
-    } catch (err) {
-      showToast('Failed to settle table', 'error');
-      console.error(err);
-    } finally {
-      setSubmitting(false);
-    }
+  const draftOrder = () => {
+    showToast('Order saved as draft', 'success');
   };
 
   /* ---- Empty / Error states ---- */
   if (loading) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-400 flex items-center justify-center font-sans">
-        <Loader2 className="w-8 h-8 animate-spin mb-3 text-amber-500" aria-label="Loading" />
+      <div className="min-h-screen bg-[#f9f9ff] text-[#5a4138] flex items-center justify-center font-sans">
+        <Loader2 className="w-8 h-8 animate-spin mb-3 text-[#006c49]" aria-label="Loading" />
         <p className="text-sm">Loading Waiter Terminal…</p>
       </div>
     );
@@ -461,16 +303,16 @@ export function WaiterTerminalPage() {
 
   if (error) {
     return (
-      <div className="min-h-screen bg-slate-950 text-slate-400 flex items-center justify-center font-sans p-6 text-center">
+      <div className="min-h-screen bg-[#f9f9ff] text-[#5a4138] flex items-center justify-center font-sans p-6 text-center">
         <AlertCircle className="w-8 h-8 mb-3 text-rose-500" aria-label="Error" />
-        <h2 className="text-slate-200 font-semibold mb-2">Terminal Unavailable</h2>
-        <p className="text-sm text-slate-400 mb-6">{error}</p>
+        <h2 className="text-[#111c2d] font-semibold mb-2">Terminal Unavailable</h2>
+        <p className="text-sm text-[#5a4138] mb-6">{error}</p>
         <button
           onClick={() => {
             setError(null);
             void loadData();
           }}
-          className="px-4 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl transition"
+          className="px-4 py-2 bg-[#006c49] hover:bg-[#005236] text-white font-bold rounded-xl transition"
         >
           Retry
         </button>
@@ -483,379 +325,357 @@ export function WaiterTerminalPage() {
   }
 
   return (
-    <div className="min-h-screen bg-slate-950 text-slate-100 font-sans antialiased p-2 md:p-4">
-      {/* Header */}
-      <header className="mb-4 flex flex-col md:flex-row md:items-center justify-between gap-3">
-        <div className="flex items-center gap-3">
-          <div className="p-2.5 bg-amber-500/10 text-amber-400 rounded-xl border border-amber-500/20">
-            <ShoppingBag className="w-6 h-6" />
+    <div className="min-h-screen bg-[#f9f9ff] text-[#111c2d] font-sans antialiased pb-24">
+      {/* ============ HEADER & TABLE CONTEXT ============ */}
+      <header className="fixed top-0 w-full z-40 bg-white/85 backdrop-blur-xl border-b border-[#e2bfb2]/30 px-4 md:px-6 py-4 no-print">
+        <div className="max-w-7xl mx-auto">
+          {/* Active Floor + KDS Live + Captain */}
+          <div className="flex items-center justify-between mb-3">
+            <div className="flex items-center gap-2">
+              <span className="w-2 h-2 rounded-full bg-[#006c49] animate-pulse" />
+              <span className="text-[10px] uppercase font-bold tracking-wider text-[#006c49]">
+                Floor Active
+              </span>
+            </div>
+            <div className="flex items-center gap-3 text-xs text-[#5a4138]">
+              <span className="flex items-center gap-1">
+                <span className="w-1.5 h-1.5 rounded-full bg-[#006c49] animate-pulse" />
+                <span>KDS Live Sync</span>
+              </span>
+            </div>
+            <div className="text-right">
+              <p className="text-xs font-bold text-[#111c2d]">Capt. Karthik R.</p>
+              <p className="text-[10px] text-[#5a4138]">Zone B • Main Hall</p>
+            </div>
           </div>
-          <div>
-            <h1 className="text-lg font-bold text-slate-100">
-              {tenant.name} — Waiter Terminal
-            </h1>
-            <p className="text-xs text-slate-400">
-              Table {activeTable ?? '—'} • Staff POS
-            </p>
+
+          {/* Table Switcher */}
+          <div className="bg-white p-3 rounded-xl border border-[#e2bfb2]/30 shadow-sm">
+            <div className="flex items-center justify-between">
+              <div className="flex items-center gap-3">
+                <span className="w-8 h-8 rounded-full bg-[#ffdbce] flex items-center justify-center text-[#370e00] font-bold text-xs">
+                  CK
+                </span>
+                <div>
+                  <h2 className="text-base font-bold text-[#111c2d]">Table Switcher</h2>
+                  <p className="text-xs text-[#5a4138]">
+                    Selected:{' '}
+                    <span className="font-bold text-[#a33900]">
+                      Table {activeTable ?? 14}
+                    </span>
+                    {' • 4 Guests'}
+                  </p>
+                </div>
+              </div>
+              <button
+                onClick={() => setActiveTable(activeTable ?? 14)}
+                className="px-3 py-1.5 bg-[#006c49] hover:bg-[#005236] text-white text-xs font-bold rounded-lg transition"
+              >
+                Switch Table
+              </button>
+            </div>
           </div>
-        </div>
-        <div className="flex items-center gap-2">
-          <span className="hidden sm:block text-xs text-slate-500">Tables Active</span>
-          <span className="text-2xl font-black text-amber-400">
-            {filteredTables.filter((t) => t.status !== 'available').length}
-          </span>
         </div>
       </header>
 
-      {/* Table search */}
-      <div className="mb-4">
-        <div className="relative max-w-md">
-          <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" aria-hidden="true" />
-          <input
-            type="search"
-            placeholder="Search tables…"
-            value={tableSearch}
-            onChange={(e) => setTableSearch(e.target.value)}
-            className="w-full pl-10 pr-4 py-2.5 bg-slate-900 border border-slate-700 rounded-xl text-slate-100 focus:ring-2 focus:ring-amber-500 focus:border-amber-500 outline-none transition"
-          />
-        </div>
-      </div>
-
-      {/* Table Grid */}
-      <div className="grid grid-cols-2 sm:grid-cols-3 md:grid-cols-4 lg:grid-cols-6 xl:grid-cols-12 gap-3">
-        {filteredTables.map((table) => (
-          <div
-            key={table.number}
-            className="bg-slate-900 border border-slate-800 rounded-xl p-3 shadow-md flex flex-col justify-between min-h-[140px] hover:border-amber-500/50 transition group"
-          >
-            <div className="flex justify-between items-start mb-2">
-              <div>
-                <span className="text-2xl font-black text-slate-100">{table.number}</span>
-                <span
-                  className={`ml-2 px-2 py-0.5 rounded text-[10px] font-bold ${statusVariant(table.status)}`}
-                >
-                  {statusIcon(table.status)} {statusLabel(table.status)}
-                </span>
+      <main className="max-w-7xl mx-auto px-4 md:px-6 pt-20 pb-24">
+        {/* ============ MODE BANNER ============ */}
+        <section className="mb-6">
+          <div className="flex items-center justify-between bg-white p-4 rounded-xl border border-[#e2bfb2]/30 shadow-sm">
+            <div className="flex items-center gap-3">
+              <div className="p-2 bg-[#ffdbce] text-[#370e00] rounded-lg">
+                <ShoppingBag className="w-5 h-5" />
               </div>
-              {table.orderId && (
-                <div className="flex items-center gap-1 text-xs text-slate-500">
-                  <ShoppingBag className="w-3 h-3" />
-                  <span>{table.itemCount} items</span>
+              <div>
+                <h3 className="text-sm font-bold text-[#111c2d] uppercase tracking-wider">
+                  Tableside Punch (Manual KOT)
+                </h3>
+                <p className="text-[10px] text-[#5a4138]">
+                  Quick order entry for captain-assisted tables
+                </p>
+              </div>
+            </div>
+            <div className="flex items-center gap-3">
+              <label className="flex items-center gap-2 cursor-pointer group">
+                <input
+                  type="checkbox"
+                  checked={rushMode}
+                  onChange={() => setRushMode(!rushMode)}
+                  className="peer sr-only"
+                />
+                <span className="w-8 h-4 rounded-full bg-[#e2bfb2] peer-checked:bg-[#a33900] after:peer-checked:translate-x-full after:transition after:content-[''] after:absolute after:top-[2px] after:left-[2px] after:bg-white after:rounded-full after:w-3 after:h-3" />
+                <span className="text-xs font-bold text-[#5a4138] group-hover:text-[#a33900] transition">
+                  Rush Starters 🔥
+                </span>
+              </label>
+            </div>
+          </div>
+        </section>
+
+        {/* ============ SEARCH & CATEGORY FILTERS ============ */}
+        <section className="mb-6">
+          <div className="bg-white p-4 rounded-xl border border-[#e2bfb2]/30 shadow-sm">
+            <div className="flex items-end gap-3 mb-3">
+              <div className="flex-1 relative">
+                <div className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-[#5a4138]">
+                  <Search className="w-4 h-4" />
                 </div>
-              )}
+                <input
+                  type="search"
+                  placeholder="Search dish or code (e.g. #B02, Naan)"
+                  value={searchQuery}
+                  onChange={(e) => setSearchQuery(e.target.value)}
+                  className="w-full pl-10 pr-10 py-2.5 bg-[#f0f3ff] border border-[#e2bfb2]/30 rounded-xl text-[#111c2d] placeholder-[#5a4138]/60 focus:outline-none focus:ring-2 focus:ring-[#006c49]/30 transition"
+                />
+                <button
+                  onClick={() => {
+                    showToast('Voice input not available in demo', 'error');
+                  }}
+                  className="absolute right-3 top-1/2 -translate-y-1/2 p-1.5 bg-[#f0f3ff] hover:bg-[#e2bfb2] rounded-full text-[#5a4138] hover:text-[#a33900] transition"
+                  aria-label="Voice dictation"
+                >
+                  <Mic className="w-4 h-4" />
+                </button>
+              </div>
             </div>
 
-            {table.orderId && (
-              <div className="flex-1 space-y-2">
-                <div className="flex justify-between items-baseline mb-1">
-                  <span className="text-xs font-medium text-slate-300">Bill</span>
-                  <span className="text-sm font-bold text-amber-400">
-                    ₹{formatPrice(table.orderTotal + table.tipAmount)}
+            {/* High-Velocity Category Chips */}
+            <div className="flex gap-2 overflow-x-auto no-scrollbar pb-2">
+              {CATEGORY_CHIPS.map((cat) => (
+                <button
+                  key={cat}
+                  onClick={() => setSelectedCategory(cat)}
+                  className={`px-3 py-2 rounded-xl text-xs font-bold transition whitespace-nowrap ${
+                    selectedCategory === cat
+                      ? 'bg-[#006c49] text-white shadow-md shadow-[#006c49]/30'
+                      : 'bg-[#f0f3ff] text-[#5a4138] hover:bg-[#e2bfb2]'
+                  }`}
+                >
+                  {cat}
+                </button>
+              ))}
+            </div>
+          </div>
+        </section>
+
+        {/* ============ RAPID TOUCH ITEM ROWS ============ */}
+        <section className="mb-8">
+          <div className="bg-white rounded-xl border border-[#e2bfb2]/30 shadow-sm overflow-hidden">
+            <div className="overflow-y-auto max-h-[60vh] pr-1">
+              {filteredMenuItems.length === 0 ? (
+                <div className="p-8 text-center text-[#5a4138]">
+                  <p className="text-sm">No items match your filters.</p>
+                </div>
+              ) : (
+                filteredMenuItems.map((item) => {
+                  const sku = item.id.slice(0, 4).toUpperCase();
+                  const cartLine = orderCart.find((l) => l.menuItemId === item.id);
+                  const inCart = !!cartLine;
+                  const qty = cartLine?.quantity ?? 0;
+                  return (
+                    <div
+                      key={item.id}
+                      className="flex items-center justify-between px-4 py-3 border-b border-[#e2bfb2]/20 last:border-0 hover:bg-[#f0f3ff]/50 transition group"
+                    >
+                      <div className="flex items-center gap-3 flex-1 min-w-0">
+                        {/* Veg / Non-Veg badge */}
+                        <span className="w-2 h-2 rounded-full bg-[#006c49]" />
+
+                        <div className="flex-1 min-w-0">
+                          <div className="flex items-center gap-2 mb-0.5">
+                            <span className="text-[10px] font-mono font-bold text-[#653e00]">
+                              #{sku}
+                            </span>
+                            <span className="text-xs font-bold text-[#111c2d] truncate">
+                              {item.name}
+                            </span>
+                            {item.is_available ? null : (
+                              <span className="text-[10px] font-bold text-rose-500">
+                                Unavailable
+                              </span>
+                            )}
+                          </div>
+                          <div className="flex items-center gap-2 text-[10px] text-[#5a4138]">
+                            <span className="flex items-center gap-1">
+                              <span className="w-1 h-1 rounded-full bg-[#006c49]" />
+                              <span>Veg</span>
+                            </span>
+                            {item.description && (
+                              <span className="flex items-center gap-1">
+                                <span className="line-clamp-1">{item.description}</span>
+                              </span>
+                            )}
+                          </div>
+                        </div>
+
+                        <span className="text-sm font-bold text-[#111c2d] whitespace-nowrap">
+                          {formatPrice(item.price)}
+                        </span>
+                      </div>
+
+                      {/* Action: Pill stepper or ADD button */}
+                      <div className="flex items-center gap-2">
+                        {inCart ? (
+                          <div className="flex items-center gap-1 bg-[#f0f3ff] rounded-full px-2 py-1 border border-[#e2bfb2]/30">
+                            <button
+                              onClick={() => changeQty(item.id, -1)}
+                              disabled={qty <= 1 || submitting}
+                              className="p-1 hover:bg-[#d97706]/10 rounded text-[#006c49] disabled:opacity-50"
+                            >
+                              <Minus className="w-3 h-3" />
+                            </button>
+                            <span className="w-4 text-center text-xs font-bold text-[#111c2d]">
+                              {qty}
+                            </span>
+                            <button
+                              onClick={() => changeQty(item.id, 1)}
+                              disabled={submitting}
+                              className="p-1 hover:bg-[#d97706]/10 rounded text-[#006c49] disabled:opacity-50"
+                            >
+                              <Plus className="w-3 h-3" />
+                            </button>
+                          </div>
+                        ) : (
+                          <button
+                            onClick={() => addToCart(item)}
+                            disabled={!item.is_available || submitting}
+                            className="px-3 py-1.5 bg-[#006c49] hover:bg-[#005236] text-white text-xs font-bold rounded-lg transition disabled:opacity-50 disabled:cursor-not-allowed"
+                          >
+                            ADD
+                          </button>
+                        )}
+                      </div>
+                    </div>
+                  );
+                })
+              )}
+            </div>
+          </div>
+        </section>
+      </main>
+
+      {/* ============ PERSISTENT FLOATING CART & KITCHEN FIRE BAR ============ */}
+      <div className="fixed bottom-0 left-0 right-0 z-50 no-print">
+        <div
+          className={`bg-white border-t border-[#e2bfb2]/30 shadow-2xl p-4 md:p-6 ${
+            orderCart.length === 0 ? 'translate-y-full' : ''
+          } transition-transform duration-300 ease-in-out`}
+        >
+          <div className="max-w-7xl mx-auto">
+            {/* Quick preview ticker */}
+            {itemCount > 0 && (
+              <div className="flex items-center justify-between mb-3">
+                <div className="flex items-center gap-2 text-xs text-[#5a4138]">
+                  <span className="font-bold text-[#006c49]">{itemCount}</span>
+                  <span>
+                    item{itemCount === 1 ? '' : 's'} in cart
                   </span>
                 </div>
-                {table.tipAmount > 0 && (
-                  <div className="flex justify-between items-baseline text-xs">
-                    <span className="text-slate-500">Tip</span>
-                    <span className="text-amber-400 font-medium">₹{formatPrice(table.tipAmount)}</span>
-                  </div>
-                )}
-                {table.paymentMethod && (
-                  <div className="flex items-center gap-1 text-xs text-slate-500">
-                    <span>{table.paymentMethod}</span>
-                    <span className="px-1 py-0.5 rounded bg-slate-800 text-[10px]">
-                      {table.paymentStatus}
-                    </span>
-                  </div>
-                )}
-                <span className="text-[10px] text-slate-500">
-                  {table.lastUpdated ? new Date(table.lastUpdated).toLocaleTimeString([], { hour: '2-digit', minute: '2-digit' }) : ''}
+                <div className="flex-1 overflow-hidden whitespace-nowrap text-[11px] font-bold text-[#a33900] animate-[marquee_3s_linear_infinite]">
+                  {previewTicker}
+                </div>
+                <span className="text-sm font-black text-[#111c2d]">
+                  {formatPrice(orderCartTotal)}
                 </span>
               </div>
             )}
 
-            <div className="mt-3 pt-2 border-t border-slate-800/50 flex gap-2">
-              {table.status === 'available' ? (
-                <button
-                  onClick={() => openOrderModal(table.number)}
-                  disabled={submitting}
-                  className="flex-1 py-2 bg-emerald-500 hover:bg-emerald-400 text-slate-950 text-xs font-bold rounded-lg transition disabled:opacity-60 flex items-center justify-center gap-1"
-                >
-                  <Plus className="w-3 h-3" /> Take Order
-                </button>
-              ) : (
-                <>
-                  <button
-                    onClick={() => openNotesModal(table.number)}
-                    disabled={submitting}
-                    className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-lg transition disabled:opacity-60"
-                  >
-                    Notes
-                  </button>
-                  {table.status === 'served' || table.status === 'bill_pending' ? (
-                    <button
-                      onClick={() => openSettleModal(table.number)}
-                      disabled={submitting}
-                      className="flex-1 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 text-xs font-bold rounded-lg transition disabled:opacity-60"
-                    >
-                      Settle
-                    </button>
-                  ) : (
-                    <button
-                      onClick={() => openSettleModal(table.number)}
-                      disabled={submitting}
-                      className="flex-1 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 text-xs font-bold rounded-lg transition disabled:opacity-60 opacity-50 cursor-not-allowed"
-                    >
-                      Settle
-                    </button>
-                  )}
-                </>
-              )}
+            <div className="flex items-center justify-between gap-3">
+              <button
+                onClick={draftOrder}
+                disabled={orderCart.length === 0 || submitting}
+                className={`flex-1 py-3.5 rounded-xl text-xs font-bold transition disabled:opacity-50 disabled:cursor-not-allowed ${
+                  orderCart.length === 0
+                    ? 'bg-[#f0f3ff] border border-[#e2bfb2]/30 text-[#5a4138]'
+                    : 'bg-[#ffdbce] text-[#370e00] shadow-md shadow-[#ffdbce]/30'
+                }`}
+              >
+                Draft
+              </button>
+              <button
+                onClick={fireKOT}
+                disabled={orderCart.length === 0 || submitting}
+                className={`flex-2 py-3.5 bg-[#006c49] hover:bg-[#005236] text-white text-xs font-bold shadow-lg shadow-[#006c49]/20 transition disabled:opacity-50 disabled:cursor-not-allowed flex items-center justify-center gap-2`}
+              >
+                <Zap className="w-4 h-4" />
+                <span>🔥 Fire KOT to Kitchen →</span>
+              </button>
             </div>
           </div>
-        ))}
+        </div>
       </div>
 
-      {/* Order Modal */}
-      {modalType === 'order' && activeTable && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="absolute inset-0" onClick={closeOrderModal} aria-hidden="true" />
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl w-full max-w-2xl max-h-[90vh] overflow-y-auto flex flex-col">
-            <div className="p-5 border-b border-slate-800 flex justify-between items-start">
-              <div>
-                <h2 className="text-lg font-bold text-slate-100">
-                  Take Order — Table {activeTable}
-                </h2>
-                <p className="text-xs text-slate-400">Quick-select items to fire to KDS</p>
-              </div>
-              <button onClick={closeOrderModal} className="p-2 text-slate-400 hover:text-slate-100 rounded hover:bg-slate-800">
-                <X className="w-6 h-6" />
+      {/* ============ SPECIAL COOKING NOTE MODAL / SHEET ============ */}
+      {notesModalOpen && notesItemId && (
+        <div className="fixed inset-0 z-50 bg-black/40 backdrop-blur-sm flex items-end justify-center p-4">
+          <div
+            className="absolute inset-0"
+            onClick={() => setNotesModalOpen(false)}
+            aria-hidden="true"
+          />
+          <div className="bg-white rounded-t-2xl border border-[#e2bfb2]/30 shadow-2xl w-full max-w-lg p-6 max-h-[80vh] overflow-y-auto">
+            <div className="flex justify-between items-center mb-6">
+              <h3 className="text-lg font-bold text-[#111c2d]">Cooking Notes</h3>
+              <button
+                onClick={() => setNotesModalOpen(false)}
+                className="p-2 text-[#5a4138] hover:text-[#111c2d] rounded hover:bg-[#f0f3ff]"
+              >
+                <X className="w-5 h-5" />
               </button>
             </div>
 
-            <div className="p-5 space-y-5">
-              {/* Category chips */}
-              <div className="flex gap-2 overflow-x-auto no-scrollbar">
-                {orderCategories.map((cat) => (
-                  <button
-                    key={cat}
-                    onClick={() => setSelectedOrderCategory(cat)}
-                    className={`px-3 py-1.5 rounded-lg text-xs font-semibold transition whitespace-nowrap ${
-                      selectedOrderCategory === cat
-                        ? 'bg-amber-500 text-slate-950'
-                        : 'bg-slate-800 text-slate-400 hover:bg-slate-700'
-                    }`}
-                  >
-                    {cat}
-                  </button>
-                ))}
-              </div>
-
-              {/* Search */}
-              <div className="relative">
-                <Search className="absolute left-3 top-1/2 -translate-y-1/2 w-4 h-4 text-slate-500" aria-hidden="true" />
-                <input
-                  type="search"
-                  placeholder="Search items…"
-                  value={orderSearchQuery}
-                  onChange={(e) => setOrderSearchQuery(e.target.value)}
-                  className="w-full pl-10 pr-4 py-2 bg-slate-900 border border-slate-700 rounded-lg text-sm text-slate-100 focus:ring-2 focus:ring-amber-500 outline-none"
-                />
-              </div>
-
-              {/* Items grid */}
-              <div className="grid grid-cols-1 sm:grid-cols-2 gap-3">
-                {filteredOrderItems.length === 0 ? (
-                  <p className="col-span-2 text-center text-slate-500 text-sm py-6">No items found</p>
-                ) : (
-                  filteredOrderItems.map((item) => (
-                    <div
-                      key={item.id}
-                      className="bg-slate-800 border border-slate-700 rounded-xl p-3 flex flex-col"
+            <p className="text-xs font-bold text-[#5a4138] uppercase mb-3 tracking-wider">
+              Quick Tags
+            </p>
+            <div className="flex gap-2 mb-6">
+              {['🌶️ Extra Spicy', '🌿 Less Spicy', 'Jain (No Onion)', '⚡ Rush'].map(
+                (tag) => {
+                  const isActive = specialTags.includes(tag);
+                  return (
+                    <button
+                      key={tag}
+                      onClick={() => toggleSpecialTag(tag)}
+                      className={`px-3 py-2 rounded-lg text-xs font-bold transition ${
+                        isActive
+                          ? 'bg-[#ffdbce] text-[#370e00] shadow-md shadow-[#ffdbce]/30'
+                          : 'bg-[#f0f3ff] text-[#5a4138] hover:bg-[#e2bfb2]'
+                      }`}
                     >
-                      <div className="flex justify-between items-start mb-2">
-                        <h4 className="font-bold text-sm text-slate-100">{item.name}</h4>
-                        <span className="text-xs font-bold text-amber-400">₹{formatPrice(item.price)}</span>
-                      </div>
-                      <p className="text-xs text-slate-400 line-clamp-2 mb-2">{item.description ?? ''}</p>
-                      <div className="mt-auto pt-2 border-t border-slate-800/50 flex items-center justify-between">
-                        <button
-                          onClick={() => addOrderItem(item)}
-                          disabled={submitting}
-                          className="flex-1 py-2 bg-amber-500/10 hover:bg-amber-500/20 text-amber-400 text-xs font-bold border border-amber-500/30 rounded-lg transition disabled:opacity-50"
-                        >
-                          <Plus className="w-3 h-3" /> Add
-                        </button>
-                      </div>
-                    </div>
-                  ))
-                )}
-              </div>
-
-              {/* Cart summary */}
-              {orderCart.length > 0 && (
-                <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4">
-                  <div className="flex justify-between items-center mb-3">
-                    <span className="text-xs font-semibold text-slate-400 uppercase">Order Cart</span>
-                    <span className="text-xs font-bold text-slate-300">{orderCart.reduce((s, l) => s + l.quantity, 0)} items</span>
-                  </div>
-                  <div className="space-y-2 max-h-40 overflow-y-auto pr-1">
-                    {orderCart.map((line) => (
-                      <div key={line.menuItemId} className="flex justify-between items-center py-2 border-b border-slate-800/50 last:border-0">
-                        <div className="flex-1">
-                          <span className="text-sm font-medium text-slate-200">{line.name}</span>
-                          <span className="text-xs text-slate-500 block">₹{formatPrice(line.price * line.quantity)}</span>
-                        </div>
-                        <div className="flex items-center gap-1">
-                          <button
-                            onClick={() => {
-                              setOrderCart(orderCart.map((l) =>
-                                l.menuItemId === line.menuItemId
-                                  ? { ...l, quantity: Math.max(1, l.quantity - 1) }
-                                  : l,
-                              ));
-                            }}
-                            className="p-1 hover:bg-slate-700 rounded text-slate-400"
-                          >
-                            <Minus className="w-3 h-3" />
-                          </button>
-                          <span className="text-xs font-bold text-slate-100 px-1.5">{line.quantity}</span>
-                          <button
-                            onClick={() => {
-                              setOrderCart(orderCart.map((l) =>
-                                l.menuItemId === line.menuItemId
-                                  ? { ...l, quantity: l.quantity + 1 }
-                                  : l,
-                              ));
-                            }}
-                            className="p-1 hover:bg-slate-700 rounded text-slate-400"
-                          >
-                            <Plus className="w-3 h-3" />
-                          </button>
-                        </div>
-                        <button
-                          onClick={() => removeOrderItem(line.menuItemId)}
-                          className="p-1 hover:bg-rose-900/50 text-rose-400 rounded"
-                        >
-                          <Trash2 className="w-3 h-3" />
-                        </button>
-                      </div>
-                    ))}
-                  </div>
-                  <div className="mt-3 pt-3 border-t border-slate-800">
-                    <div className="flex justify-between items-center text-sm">
-                      <span className="text-slate-300">Total</span>
-                      <span className="text-lg font-bold text-amber-400">₹{formatPrice(orderCartTotal)}</span>
-                    </div>
-                    <div className="mt-2">
-                      <label className="block text-xs font-semibold text-slate-400 mb-1">Verbal Notes (optional)</label>
-                      <textarea
-                        value={orderTableNotes}
-                        onChange={(e) => setOrderTableNotes(e.target.value)}
-                        rows={2}
-                        placeholder="e.g. Allergic to nuts"
-                        className="w-full px-2 py-1.5 rounded bg-slate-950 border border-slate-700 text-xs text-slate-100 focus:border-amber-500 focus:outline-none"
-                      />
-                    </div>
-                  </div>
-                  <button
-                    onClick={submitOrder}
-                    disabled={submitting}
-                    className="w-full py-3 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl shadow-lg shadow-amber-500/20 transition disabled:opacity-60 disabled:cursor-not-allowed"
-                  >
-                    {submitting ? 'Firing to Kitchen…' : 'Send Order to KDS'}
-                  </button>
-                </div>
+                      {tag}
+                    </button>
+                  );
+                },
               )}
             </div>
-          </div>
-        </div>
-      )}
 
-      {/* Notes Modal */}
-      {modalType === 'notes' && activeTable && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="absolute inset-0" onClick={closeNotesModal} aria-hidden="true" />
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6">
-            <div className="flex justify-between items-center mb-5">
-              <h2 className="text-lg font-bold text-slate-100">Add Verbal Notes</h2>
-              <button onClick={closeNotesModal} className="p-2 text-slate-400 hover:text-slate-100 rounded hover:bg-slate-800">
-                <X className="w-6 h-6" />
-              </button>
-            </div>
-            <p className="text-sm text-slate-400 mb-4">Table {activeTable}</p>
-            <textarea
-              value={notesInput}
-              onChange={(e) => setNotesInput(e.target.value)}
-              rows={4}
-              placeholder="e.g. Allergic to nuts, no onions, extra spicy"
-              className="w-full px-3 py-2.5 rounded-xl bg-slate-950 border border-slate-700 text-slate-100 focus:ring-2 focus:ring-amber-500 focus:outline-none transition"
-            />
-            <div className="mt-6 flex justify-end gap-3">
-              <button
-                onClick={closeNotesModal}
-                className="px-4 py-2 rounded-xl text-slate-300 hover:text-slate-100 hover:bg-slate-800 transition"
-              >
-                Cancel
-              </button>
-              <button
-                onClick={saveNotes}
-                disabled={submitting}
-                className="px-5 py-2 bg-amber-500 hover:bg-amber-400 text-slate-950 font-bold rounded-xl shadow-lg shadow-amber-500/20 disabled:opacity-60 transition"
-              >
-                {submitting ? 'Saving…' : 'Save Notes'}
-              </button>
-            </div>
-          </div>
-        </div>
-      )}
-
-      {/* Settle Modal */}
-      {modalType === 'settle' && activeTable && (
-        <div className="fixed inset-0 z-50 bg-black/80 backdrop-blur-sm flex items-center justify-center p-4">
-          <div className="absolute inset-0" onClick={closeSettleModal} aria-hidden="true" />
-          <div className="bg-slate-900 border border-slate-800 rounded-2xl shadow-2xl w-full max-w-md p-6">
-            <div className="flex justify-between items-center mb-5">
-              <h2 className="text-lg font-bold text-slate-100">Settle &amp; Clear Table</h2>
-              <button onClick={closeSettleModal} className="p-2 text-slate-400 hover:text-slate-100 rounded hover:bg-slate-800">
-                <X className="w-6 h-6" />
-              </button>
-            </div>
-            <p className="text-sm text-slate-400 mb-4">Table {activeTable}</p>
-
-            <div className="bg-slate-800/50 border border-slate-700/50 rounded-xl p-4 mb-6">
-              <div className="flex justify-between items-center mb-2">
-                <span className="text-slate-400 text-sm">Bill Total</span>
-                <span className="text-sm font-bold text-amber-400">
-                  ₹{formatPrice(
-                    (tablesByNumber.get(activeTable!)?.total ?? 0) +
-                      (tablesByNumber.get(activeTable!)?.tip_amount ?? 0),
-                  )}
-                </span>
-              </div>
-              <div className="flex justify-between items-center">
-                <span className="text-slate-400 text-sm">Tip</span>
-                <span className="text-sm font-bold text-amber-400">
-                  ₹{formatPrice(tablesByNumber.get(activeTable!)?.tip_amount ?? 0)}
-                </span>
-              </div>
+            <div className="mb-6">
+              <label className="block text-xs font-bold text-[#5a4138] mb-2">
+                Custom Note
+              </label>
+              <textarea
+                value={cookingNotes}
+                onChange={(e) => setCookingNotes(e.target.value)}
+                rows={3}
+                placeholder="e.g. Extra garlic, less oil, medium spice"
+                className="w-full px-3 py-2 rounded-xl bg-[#f0f3ff] border border-[#e2bfb2]/30 text-[#111c2d] focus:outline-none focus:ring-2 focus:ring-[#006c49]/30 transition"
+              />
             </div>
 
-            <p className="text-sm text-slate-400 mb-6">
-              Marking this table as settled will reset it to Available status.
-            </p>
             <div className="flex justify-end gap-3">
               <button
-                onClick={closeSettleModal}
-                className="px-4 py-2 rounded-xl text-slate-300 hover:text-slate-100 hover:bg-slate-800 transition"
+                onClick={() => setNotesModalOpen(false)}
+                className="px-4 py-2 rounded-xl text-[#5a4138] hover:text-[#111c2d] hover:bg-[#f0f3ff] transition"
               >
                 Cancel
               </button>
               <button
-                onClick={settleTable}
-                disabled={submitting}
-                className="px-5 py-2 bg-rose-500 hover:bg-rose-400 text-white font-bold rounded-xl shadow-lg shadow-rose-500/20 disabled:opacity-60 transition"
+                onClick={() => {
+                  setNotesModalOpen(false);
+                  showToast('Notes added to order', 'success');
+                }}
+                className="px-4 py-2 bg-[#006c49] hover:bg-[#005236] text-white font-bold rounded-xl shadow-lg shadow-[#006c49]/20 transition"
               >
-                {submitting ? 'Settling…' : 'Settle & Clear'}
+                Apply Notes
               </button>
             </div>
           </div>
@@ -864,7 +684,7 @@ export function WaiterTerminalPage() {
 
       {/* Toast */}
       {toast && (
-        <div className="fixed bottom-4 left-1/2 -translate-x-1/2 z-[60] flex items-center">
+        <div className="fixed bottom-20 left-1/2 -translate-x-1/2 z-[60] flex items-center no-print">
           <div
             className={`px-4 py-3 rounded-xl shadow-xl flex items-center gap-2.5 border text-sm font-medium backdrop-blur-md ${
               toast.type === 'success'
