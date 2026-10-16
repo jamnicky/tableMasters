@@ -647,6 +647,15 @@ export function AdminPage() {
             <Menu className="w-4 h-4" />
             <span>Open customer menu</span>
           </a>
+          <a
+            href={`/${slug}/waiter`}
+            target="_blank"
+            rel="noopener noreferrer"
+            className="flex items-center gap-2 px-3 py-2 text-sm font-medium text-slate-300 bg-slate-800 border border-slate-700 rounded-xl hover:bg-slate-700 transition"
+          >
+            <ShoppingBag className="w-4 h-4" />
+            <span>Waiter Terminal</span>
+          </a>
           <button
             onClick={loadData}
             disabled={refreshing || !tenant}
