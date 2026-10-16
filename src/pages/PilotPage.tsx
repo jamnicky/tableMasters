@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react';
 import { useParams } from 'react-router-dom';
 import { supabase } from '@/lib/supabase';
+import type { Order as DbOrder } from '@/types/database';
 
 interface OrderItem {
   id: string;
@@ -32,7 +33,9 @@ export function PilotPage() {
     fetchTenantAndOrders();
 
     // Real-time synchronization with Supabase orders & order items
-    const channel = supabase
+    const sb = supabase;
+    if (!sb) return;
+    const channel = sb
       .channel('captain-floor-sync')
       .on(
         'postgres_changes',
@@ -44,38 +47,40 @@ export function PilotPage() {
       .subscribe();
 
     return () => {
-      supabase.removeChannel(channel);
+      sb.removeChannel(channel);
     };
   }, [tenantSlug]);
 
   async function fetchTenantAndOrders() {
-  try {
-    const { data: tenantData } = await supabase
-      .from('tenants')
-      .select('*')
-      .eq('slug', tenantSlug || 'acme-bistro')
-      .single();
+    const sb = supabase;
+    if (!sb) return;
+    try {
+      const { data: tenantData } = await sb
+        .from('tenants')
+        .select('*')
+        .eq('slug', tenantSlug || 'acme-bistro')
+        .single();
 
-    if (tenantData) {
-      setTenant(tenantData);
+      if (tenantData) {
+        setTenant(tenantData);
 
-      // Fetch orders with explicit menu_items query join
-      const { data: ordersData, error } = await supabase
-        .from('orders')
-        .select(`
-          *,
-          order_items (
-            id,
-            quantity,
-            unit_price,
-            menu_items ( name, category )
-          )
-        `)
-        .eq('tenant_id', tenantData.id)
-        .order('created_at', { ascending: false });
+        // Fetch orders with explicit menu_items query join
+        const { data: ordersData, error } = await sb
+          .from('orders')
+          .select(`
+            *,
+            order_items (
+              id,
+              quantity,
+              unit_price,
+              menu_items ( name, category )
+            )
+          `)
+          .eq('tenant_id', tenantData.id)
+          .order('created_at', { ascending: false });
 
-      if (error) throw error;
-      if (ordersData) setOrders(ordersData);
+        if (error) throw error;
+        if (ordersData) setOrders(ordersData as unknown as Order[]);
     }
   } catch (err) {
     console.error('Error fetching pilot data:', err);
@@ -91,10 +96,17 @@ export function PilotPage() {
   };
 
   const handleUpdateStatus = async (orderId: string, newStatus: string, successMsg: string) => {
+    const sb = supabase;
+    if (!sb) return;
     try {
-      const { error } = await supabase
+      const { error } = await sb
         .from('orders')
-        .update({ status: newStatus, ...(newStatus === 'completed' ? { served_at: new Date().toISOString() } : {}) })
+        .update(
+          {
+            status: newStatus as DbOrder['status'],
+            ...(newStatus === 'completed' ? { served_at: new Date().toISOString() } : {}),
+          } as unknown as Partial<DbOrder>
+        )
         .eq('id', orderId);
 
       if (error) throw error;

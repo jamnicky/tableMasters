@@ -21,6 +21,7 @@ export interface MenuItem {
   category: string;
   is_available: boolean;
   image_url: string | null;
+  customization_options: string | null; // JSON string of customization groups
   created_at: string;
   updated_at: string;
 }
@@ -38,6 +39,8 @@ export interface Order {
     | 'cancelled';
   total: number; // stored in minor currency units (e.g. cents)
   customer_name: string | null;
+  order_type: string;
+  table_number_display?: string;
   created_at: string;
   updated_at: string;
 }
@@ -49,6 +52,7 @@ export interface OrderItem {
   quantity: number;
   unit_price: number; // stored in minor currency units (e.g. cents)
   notes: string | null;
+  customizations: string | null; // JSON string of selected customizations
   created_at: string;
 }
 
@@ -61,6 +65,17 @@ export interface Waiter {
   created_at: string;
 }
 
+export interface WaiterCall {
+  id: string;
+  tenant_id: string;
+  table_number: string | number;
+  order_id: string | null;
+  message: string | null;
+  status: 'pending' | 'acknowledged' | 'resolved';
+  created_at: string;
+  updated_at: string;
+}
+
 /**
  * Supabase Database shape used for client-side typing.
  * Mirror your generated types from `supabase gen types typescript --local`.
@@ -69,29 +84,40 @@ export interface Database {
   public: {
     Tables: {
       tenants: {
-        Row: Tenant;
+        Row: Tenant & Record<string, unknown>;
         Insert: Omit<Tenant, 'id' | 'created_at' | 'updated_at'>;
         Update: Partial<Tenant>;
+        Relationships: [];
       };
       menu_items: {
-        Row: MenuItem;
+        Row: MenuItem & Record<string, unknown>;
         Insert: Omit<MenuItem, 'id' | 'created_at' | 'updated_at'>;
         Update: Partial<MenuItem>;
+        Relationships: [];
       };
       orders: {
-        Row: Order;
+        Row: Order & Record<string, unknown>;
         Insert: Omit<Order, 'id' | 'created_at' | 'updated_at'>;
         Update: Partial<Order>;
+        Relationships: [];
       };
       order_items: {
-        Row: OrderItem;
+        Row: OrderItem & Record<string, unknown>;
         Insert: Omit<OrderItem, 'id' | 'created_at'>;
         Update: Partial<OrderItem>;
+        Relationships: [];
       };
       waiters: {
-        Row: Waiter;
+        Row: Waiter & Record<string, unknown>;
         Insert: Omit<Waiter, 'id' | 'created_at'>;
         Update: Partial<Waiter>;
+        Relationships: [];
+      };
+      waiter_calls: {
+        Row: WaiterCall & Record<string, unknown>;
+        Insert: Omit<WaiterCall, 'id' | 'created_at' | 'updated_at'>;
+        Update: Partial<WaiterCall>;
+        Relationships: [];
       };
     };
     Views: {
